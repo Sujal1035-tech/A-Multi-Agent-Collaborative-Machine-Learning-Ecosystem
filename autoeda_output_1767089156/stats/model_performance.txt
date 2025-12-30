@@ -1,0 +1,5 @@
+--- Model Performance Summary (Accuracy Scores) ---
+LogisticRegression: 0.8219
+RandomForest: 0.7534
+XGBoost: 0.7397
+DecisionTree: 0.6712
