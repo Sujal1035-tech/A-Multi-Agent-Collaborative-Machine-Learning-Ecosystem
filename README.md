@@ -4,7 +4,7 @@
 
 This system completely automates the creation of machine learning models. Instead of relying on a human to manually clean data and select algorithms, it deploys a team of **seven specialized AI agents** that work together to solve the problem.
 
-The process is simple: you provide the data, and the agents handle the rest. They automatically analyze the dataset, fix quality issues, engineer features, and train multiple models to find the best performer. The final result is not just a prediction, but a complete, high-quality Python codebase that you can deploy immediately.
+The process is simple: you provide the data, and the agents handle the rest. They automatically analyze the dataset, fix quality issues, engineer features, and train multiple models to find the best performer. The final result is not just a prediction, but a complete, high-quality Python codebase.
 
 **Proven Performance:**
 The system has been tested on **10 datasets**, consistently achieving an accuracy of **more than 80%**. It automatically generates a comprehensive project folder (e.g., `autoeda_output_1767089156`) containing the full source code and analysis reports.
