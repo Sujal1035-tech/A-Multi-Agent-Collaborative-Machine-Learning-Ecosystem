@@ -27,15 +27,63 @@ except ImportError:
 app = FastAPI()
 
 def preprocess_data(df, prep_strategy, feat_strategy, target_col):
-    """Apply preprocessing and feature engineering"""
+    """
+    Smart preprocessing using LLM strategies from preprocessing and feature agents.
+    Falls back to basic encoding if strategies are empty/invalid.
+    """
+    print(f"[MODEL] Smart preprocessing with LLM strategies...")
+    
     X = df.drop(target_col, axis=1)
     y = df[target_col]
     
-    # Encode categorical columns
-    le = LabelEncoder()
-    for col in X.select_dtypes(include=['object']).columns:
-        X[col] = le.fit_transform(X[col])
+    # Parse strategies (they may be nested dicts or strings)
+    prep = prep_strategy if isinstance(prep_strategy, dict) else {}
+    feat = feat_strategy if isinstance(feat_strategy, dict) else {}
     
+    # Get encoding strategy
+    encoding = feat.get("encoding_strategy", feat.get("feature_strategy", {}).get("encoding_strategy", {}))
+    
+    # Apply one-hot encoding
+    onehot_cols = encoding.get("onehot", [])
+    for col in onehot_cols:
+        if col in X.columns and X[col].dtype == 'object':
+            dummies = pd.get_dummies(X[col], prefix=col, drop_first=True)
+            X = pd.concat([X.drop(col, axis=1), dummies], axis=1)
+            print(f"[MODEL] One-hot: {col}")
+    
+    # Apply label encoding to specified columns
+    label_cols = encoding.get("label", [])
+    le = LabelEncoder()
+    for col in label_cols:
+        if col in X.columns and X[col].dtype == 'object':
+            X[col] = le.fit_transform(X[col].astype(str))
+            print(f"[MODEL] Label encode: {col}")
+    
+    # Apply frequency encoding for target-encoded columns
+    target_encode_cols = encoding.get("target", [])
+    for col in target_encode_cols:
+        if col in X.columns and X[col].dtype == 'object':
+            freq = X[col].value_counts(normalize=True)
+            X[col] = X[col].map(freq).fillna(0)
+            print(f"[MODEL] Frequency encode: {col}")
+    
+    # Fallback: encode any remaining object columns
+    for col in X.select_dtypes(include=['object']).columns:
+        X[col] = le.fit_transform(X[col].astype(str))
+        print(f"[MODEL] Auto-encode: {col}")
+    
+    # Handle any remaining NaN values
+    if X.isna().sum().sum() > 0:
+        X = X.fillna(X.median(numeric_only=True))
+        print(f"[MODEL] Filled remaining NaN with median")
+    
+    # Encode target if categorical
+    if y.dtype == 'object' or str(y.dtype) == 'category':
+        target_le = LabelEncoder()
+        y = pd.Series(target_le.fit_transform(y), index=y.index)
+        print(f"[MODEL] Encoded target: {dict(zip(target_le.classes_, range(len(target_le.classes_))))}")
+    
+    print(f"[MODEL] Final shape: X={X.shape}")
     return X, y
 
 def handle_class_imbalance(X, y):
@@ -262,7 +310,10 @@ def handle(task: A2ATask):
         
         print(f"[MODEL] Loading dataset...")
         df = pd.read_csv(csv_path)
-        target_col = df.columns[-1]
+        
+        # Use provided target column or fall back to last column
+        target_col = task.input.get("target_column", df.columns[-1])
+        print(f"[MODEL] Target column: {target_col}")
         
         print(f"[MODEL] Preprocessing data...")
         X, y = preprocess_data(df, prep_strategy, feat_strategy, target_col)

@@ -3,6 +3,10 @@ from crewai import Agent, Task, Crew
 from a2a.schemas import A2ATask, A2AResponse
 from dotenv import load_dotenv
 import os
+import json
+import re
+import pandas as pd
+import numpy as np
 
 # Load .env from project root
 env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
@@ -12,102 +16,180 @@ app = FastAPI()
 
 from config import LLM_MODEL
 
+# =============================================================================
+# SMART ENCODING FUNCTIONS
+# =============================================================================
+
+def parse_json_from_llm(text: str) -> dict:
+    """Extract JSON from LLM response text"""
+    try:
+        json_match = re.search(r'\{[\s\S]*\}', str(text))
+        if json_match:
+            return json.loads(json_match.group())
+    except:
+        pass
+    return {}
+
+
+def apply_encoding(df: pd.DataFrame, strategy: dict, target_col: str) -> pd.DataFrame:
+    """Apply smart encoding based on LLM strategy"""
+    print(f"[FEATURE] Applying smart encoding strategies...")
+    
+    encoding_strategy = strategy.get("encoding_strategy", {})
+    
+    # One-hot encoding (low cardinality)
+    onehot_cols = encoding_strategy.get("onehot", [])
+    for col in onehot_cols:
+        if col not in df.columns or col == target_col:
+            continue
+        if df[col].dtype == 'object':
+            dummies = pd.get_dummies(df[col], prefix=col, drop_first=True)
+            df = pd.concat([df.drop(col, axis=1), dummies], axis=1)
+            print(f"  → {col}: one-hot encoded ({len(dummies.columns)} new columns)")
+    
+    # Label encoding (ordinal or binary)
+    label_cols = encoding_strategy.get("label", [])
+    for col in label_cols:
+        if col not in df.columns or col == target_col:
+            continue
+        if df[col].dtype == 'object':
+            unique_vals = df[col].unique()
+            mapping = {v: i for i, v in enumerate(unique_vals)}
+            df[col] = df[col].map(mapping)
+            print(f"  → {col}: label encoded ({len(mapping)} classes)")
+    
+    # Target encoding (high cardinality) - simplified version
+    target_cols = encoding_strategy.get("target", [])
+    for col in target_cols:
+        if col not in df.columns or col == target_col:
+            continue
+        if df[col].dtype == 'object':
+            # For target encoding, use frequency as proxy (safer)
+            freq = df[col].value_counts(normalize=True)
+            df[col] = df[col].map(freq)
+            print(f"  → {col}: frequency encoded (proxy for target)")
+    
+    # Handle any remaining object columns with label encoding
+    for col in df.select_dtypes(include=['object']).columns:
+        if col == target_col:
+            continue
+        unique_vals = df[col].unique()
+        mapping = {v: i for i, v in enumerate(unique_vals)}
+        df[col] = df[col].map(mapping)
+        print(f"  → {col}: auto label encoded ({len(mapping)} classes)")
+    
+    return df
+
+
+def drop_features(df: pd.DataFrame, strategy: dict, target_col: str) -> pd.DataFrame:
+    """Drop features recommended by LLM"""
+    features_to_drop = strategy.get("features_to_drop", [])
+    
+    for col in features_to_drop:
+        if col in df.columns and col != target_col:
+            df = df.drop(col, axis=1)
+            print(f"  → Dropped: {col}")
+    
+    return df
+
+
+# =============================================================================
+# MAIN HANDLER
+# =============================================================================
+
 @app.post("/a2a")
 def handle(task: A2ATask):
     try:
+        # Get analysis info
+        analysis = task.input.get("analysis_summary", task.input)
+        csv_path = task.input.get("csv_path")
+        target_col = analysis.get("target_column", "")
+        cardinality = analysis.get("cardinality", {})
+        
         engineer = Agent(
-            role="Advanced Feature Engineering Expert",
-            goal="Design optimal feature engineering with polynomial features, interactions, and intelligent encoding",
-            backstory="""You are an expert in advanced feature engineering who creates powerful features through:
-            - Polynomial features (degree 2) for numerical columns
-            - Feature interactions between important variables
-            - Smart categorical encoding (one-hot for low cardinality, target for high)
-            - Feature selection to remove low-importance features
-            - Binning for better performance
-            """,
+            role="Smart Feature Engineering Expert",
+            goal="Analyze data and return ONLY valid JSON with encoding strategies",
+            backstory="""You analyze data cardinality and types to recommend optimal encoding.
+            - One-hot for low cardinality (<5 unique values)
+            - Label for binary or ordinal data
+            - Target/frequency encoding for high cardinality (>10 unique)
+            Always return ONLY a valid JSON object.""",
             llm=LLM_MODEL
         )
         
-        # Truncate input to avoid token limits
-        input_str = str(task.input)
-        if len(input_str) > 6000:
-            input_str = input_str[:6000] + "...(truncated)"
+        # Truncate input
+        input_str = str(analysis)
+        if len(input_str) > 4000:
+            input_str = input_str[:4000] + "..."
             
         t = Task(
             description=f"""
-Analyze the dataset and recommend ADVANCED feature engineering strategies:
+Analyze these data stats and return encoding strategies as JSON:
 
-Dataset Info:
 {input_str}
 
-Provide comprehensive recommendations for:
-
-1. **Polynomial Features**: 
-   - Recommend numerical columns for degree-2 polynomial transformation
-   - Suggest interaction pairs (e.g., Age*Balance, CreditScore*Tenure)
-
-2. **Feature Binning**:
-   - Numerical columns to bin into quantiles (improves tree models)
-   - Number of bins per column (3-10)
-
-3. **Categorical Encoding** (Smart Strategy):
-   - one_hot: Low cardinality (< 5 unique values)
-   - label: Ordinal categories with natural order
-   - target: High cardinality (> 10 unique values) - encodes by target mean
-   - ordinal: Natural ordering (e.g., education levels)
-
-4. **Feature Selection**:
-   - Features to DROP: Low correlation, high nulls, redundant (e.g., IDs, names)
-   - Keep only top 80% most important features
-
-5. **Feature Creation**:
-   - Ratio features (e.g., Balance/EstimatedSalary)
-   - Aggregate features (e.g., ProductsPerTenure = NumOfProducts/Tenure)
-   - Flag features (e.g., IsActiveMember_and_HasCrCard)
-
-Return detailed JSON with:
+Return ONLY this JSON structure:
 {{
-  "polynomial_features": {{
-    "numerical_columns": ["Age", "Balance", "CreditScore"],
-    "interaction_pairs": [["Age", "Balance"], ["CreditScore", "Tenure"]]
+  "encoding_strategy": {{
+    "onehot": ["low_cardinality_cols"],
+    "label": ["binary_or_ordinal_cols"],
+    "target": ["high_cardinality_cols"]
   }},
-  "binning": {{
-    "Age": {{"bins": 5, "strategy": "quantile"}},
-    "Balance": {{"bins": 10, "strategy": "quantile"}}
-  }},
-  "categorical_encoding": {{
-    "one_hot": ["Geography"],
-    "label": ["Gender"],
-    "target": ["Surname"],
-    "ordinal": {{"Education": ["HS", "College", "Masters", "PhD"]}}
-  }},
-  "features_to_drop": ["RowNumber", "CustomerId", "Surname"],
-  "features_to_create": [
-    {{"name": "BalanceToSalaryRatio", "formula": "Balance / EstimatedSalary"}},
-    {{"name": "ProductsPerYear", "formula": "NumOfProducts / max(Tenure, 1)"}},
-    {{"name": "IsActiveWithCard", "formula": "IsActiveMember * HasCrCard"}}
-  ],
-  "feature_selection": {{
-    "method": "select_k_best",
-    "k_percent": 80
-  }}
+  "features_to_drop": ["id_cols", "name_cols", "useless_cols"]
 }}
 
-Be specific and practical. Focus on features that will improve model performance.
+Rules:
+- onehot: Columns with 2-5 unique values (creates dummy variables)
+- label: Binary columns or ordinal (natural order) 
+- target: Columns with >10 unique values (use frequency encoding)
+- features_to_drop: ID columns, names, or columns with >90% nulls
+- Do NOT include the target column: "{target_col}"
+- ONLY include columns that exist in the dataset
+- Return ONLY valid JSON
 """,
-            expected_output="Detailed JSON with advanced feature engineering strategies including polynomials, interactions, binning, encoding, and selection",
+            expected_output="Pure JSON with encoding strategies",
             agent=engineer
         )
         
         crew = Crew(agents=[engineer], tasks=[t])
         result = crew.kickoff()
         
+        # Parse LLM strategy
+        strategy = parse_json_from_llm(str(result))
+        print(f"[FEATURE] LLM Strategy: {json.dumps(strategy, indent=2)[:500]}")
+        
+        # If CSV path provided, apply encoding
+        encoded_data = None
+        if csv_path:
+            print(f"[FEATURE] Loading and encoding data...")
+            df = pd.read_csv(csv_path)
+            original_shape = df.shape
+            
+            # Drop useless features first
+            df = drop_features(df, strategy, target_col)
+            
+            # Apply smart encoding
+            df = apply_encoding(df, strategy, target_col)
+            
+            encoded_data = {
+                "original_shape": list(original_shape),
+                "encoded_shape": list(df.shape),
+                "columns": df.columns.tolist()
+            }
+            print(f"[FEATURE] Done! {original_shape} → {df.shape}")
+        
         return A2AResponse(
             task_id=task.task_id,
             sender="feature-agent",
             status="COMPLETED",
-            output={"feature_strategy": str(result)}
+            output={
+                "feature_strategy": strategy,
+                "encoded_data": encoded_data,
+                "raw_llm_output": str(result)[:500]
+            }
         )
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"[FEATURE] Error: {e}")
+        import traceback
+        traceback.print_exc()
         raise

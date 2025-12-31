@@ -12,9 +12,9 @@ from a2a.client import send_task
 from a2a.schemas import A2ATask
 from core.hitl import ask_permission
 from core.file_writer import write_project
+from core.user_input import get_user_input
 from config import SERVICE_URL, SERVICE_PORT, MAX_OPTIMIZATION_ITERATIONS, TARGET_ACCURACY
 
-CSV = os.path.join(PROJECT_ROOT, "orchestrator", "Algerian_forest_fires_cleaned_dataset.csv")
 OUT = os.path.join(PROJECT_ROOT, f"autoeda_output_{int(time.time())}")
 
 # ============================================================================
@@ -81,13 +81,16 @@ def run_workflow():
     print("  AutoEDA - Smart AutoML Workflow")
     print("=" * 70)
 
+    # Get user input for CSV path and target column
+    csv_path, target_column, _ = get_user_input()
+
     # Step 1: Analysis
     print("\n📊 Step 1/6: Analyzing dataset...")
     analysis = send_task(
         f"{SERVICE_URL}/a2a/analysis",
         A2ATask.create(
             "orchestrator", "analysis-agent",
-            "dataset_analysis", {"csv_path": CSV}
+            "dataset_analysis", {"csv_path": csv_path, "target_column": target_column}
         )
     )
     print("✅ Analysis complete!")
@@ -144,7 +147,8 @@ def run_workflow():
             A2ATask.create(
                 "orchestrator", "model-agent",
                 "model_training", {
-                    "csv_path": CSV,
+                    "csv_path": csv_path,
+                    "target_column": target_column,
                     "prep_strategy": prep_strategy["output"],
                     "feat_strategy": feat_strategy["output"]
                 }
@@ -213,7 +217,7 @@ def run_workflow():
     if ask_permission(OUT):
         write_project(
             OUT,
-            CSV,
+            csv_path,
             project["output"]["analysis_code"],
             project["output"]["readme"],
             insights["output"]["insights"]

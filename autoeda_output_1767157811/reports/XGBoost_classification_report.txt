@@ -1,0 +1,13 @@
+Classification Report for XGBoost
+========================================
+              precision    recall  f1-score   support
+
+      setosa       1.00      1.00      1.00        15
+  versicolor       0.88      0.93      0.90        15
+   virginica       0.93      0.87      0.90        15
+
+    accuracy                           0.93        45
+   macro avg       0.93      0.93      0.93        45
+weighted avg       0.93      0.93      0.93        45
+
+Accuracy: 0.9333

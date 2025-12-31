@@ -3,6 +3,10 @@ from crewai import Agent, Task, Crew
 from a2a.schemas import A2ATask, A2AResponse
 from dotenv import load_dotenv
 import os
+import json
+import re
+import pandas as pd
+import numpy as np
 
 # Load .env from project root
 env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
@@ -12,97 +16,241 @@ app = FastAPI()
 
 from config import LLM_MODEL
 
+# =============================================================================
+# SMART PREPROCESSING FUNCTIONS
+# =============================================================================
+
+def parse_json_from_llm(text: str) -> dict:
+    """Extract JSON from LLM response text"""
+    try:
+        # Try to find JSON block in the text
+        json_match = re.search(r'\{[\s\S]*\}', str(text))
+        if json_match:
+            return json.loads(json_match.group())
+    except:
+        pass
+    return {}
+
+
+def apply_null_handling(df: pd.DataFrame, strategy: dict, target_col: str) -> pd.DataFrame:
+    """Apply null handling based on LLM strategy"""
+    print(f"[PREPROCESSING] Applying null handling strategies...")
+    
+    null_strategy = strategy.get("null_strategy", {})
+    
+    for col, config in null_strategy.items():
+        if col not in df.columns or col == target_col:
+            continue
+            
+        if df[col].isna().sum() == 0:
+            continue
+            
+        method = config.get("method", "median") if isinstance(config, dict) else config
+        
+        try:
+            if method == "mean" and df[col].dtype in ['int64', 'float64']:
+                fill_val = df[col].mean()
+                df[col] = df[col].fillna(fill_val)
+                print(f"  → {col}: filled with mean ({fill_val:.2f})")
+                
+            elif method == "median" and df[col].dtype in ['int64', 'float64']:
+                fill_val = df[col].median()
+                df[col] = df[col].fillna(fill_val)
+                print(f"  → {col}: filled with median ({fill_val:.2f})")
+                
+            elif method == "mode":
+                fill_val = df[col].mode()[0] if len(df[col].mode()) > 0 else "Unknown"
+                df[col] = df[col].fillna(fill_val)
+                print(f"  → {col}: filled with mode ({fill_val})")
+                
+            elif method == "knn":
+                # Simple KNN approximation - use median for now
+                fill_val = df[col].median() if df[col].dtype in ['int64', 'float64'] else df[col].mode()[0]
+                df[col] = df[col].fillna(fill_val)
+                print(f"  → {col}: filled with knn-approx ({fill_val})")
+                
+            elif method == "drop":
+                df = df.dropna(subset=[col])
+                print(f"  → {col}: dropped null rows")
+        except Exception as e:
+            print(f"  → {col}: error - {e}")
+    
+    return df
+
+
+def apply_outlier_handling(df: pd.DataFrame, strategy: dict, target_col: str) -> pd.DataFrame:
+    """Apply outlier handling based on LLM strategy"""
+    print(f"[PREPROCESSING] Applying outlier handling...")
+    
+    outlier_strategy = strategy.get("outlier_strategy", {})
+    method = outlier_strategy.get("method", "iqr_capping")
+    threshold = outlier_strategy.get("threshold", 1.5)
+    columns = outlier_strategy.get("columns", [])
+    
+    if method != "iqr_capping" or not columns:
+        return df
+    
+    for col in columns:
+        if col not in df.columns or col == target_col:
+            continue
+        if df[col].dtype not in ['int64', 'float64']:
+            continue
+            
+        Q1 = df[col].quantile(0.25)
+        Q3 = df[col].quantile(0.75)
+        IQR = Q3 - Q1
+        lower = Q1 - threshold * IQR
+        upper = Q3 + threshold * IQR
+        
+        outliers_before = ((df[col] < lower) | (df[col] > upper)).sum()
+        df[col] = df[col].clip(lower=lower, upper=upper)
+        print(f"  → {col}: capped {outliers_before} outliers [{lower:.2f}, {upper:.2f}]")
+    
+    return df
+
+
+def apply_scaling(df: pd.DataFrame, strategy: dict, target_col: str) -> pd.DataFrame:
+    """Apply scaling based on LLM strategy"""
+    print(f"[PREPROCESSING] Applying scaling...")
+    
+    scaling_strategy = strategy.get("scaling_strategy", {})
+    method = scaling_strategy.get("method", "standard")
+    columns = scaling_strategy.get("columns", [])
+    
+    if not columns:
+        return df
+    
+    for col in columns:
+        if col not in df.columns or col == target_col:
+            continue
+        if df[col].dtype not in ['int64', 'float64']:
+            continue
+            
+        try:
+            if method == "standard":
+                mean_val = df[col].mean()
+                std_val = df[col].std()
+                if std_val > 0:
+                    df[col] = (df[col] - mean_val) / std_val
+                print(f"  → {col}: standard scaled")
+                
+            elif method == "robust":
+                median_val = df[col].median()
+                Q1 = df[col].quantile(0.25)
+                Q3 = df[col].quantile(0.75)
+                IQR = Q3 - Q1
+                if IQR > 0:
+                    df[col] = (df[col] - median_val) / IQR
+                print(f"  → {col}: robust scaled")
+                
+            elif method == "minmax":
+                min_val = df[col].min()
+                max_val = df[col].max()
+                if max_val > min_val:
+                    df[col] = (df[col] - min_val) / (max_val - min_val)
+                print(f"  → {col}: minmax scaled")
+        except Exception as e:
+            print(f"  → {col}: scaling error - {e}")
+    
+    return df
+
+
+# =============================================================================
+# MAIN HANDLER
+# =============================================================================
+
 @app.post("/a2a")
 def handle(task: A2ATask):
     try:
+        # Get data info from input
+        analysis = task.input.get("analysis_summary", task.input)
+        csv_path = task.input.get("csv_path")
+        target_col = analysis.get("target_column", "")
+        
         strategist = Agent(
-            role="Advanced Data Preprocessing Strategist",
-            goal="Determine optimal preprocessing with KNN imputation, robust scaling, and outlier handling",
-            backstory="""You are an expert in advanced data preprocessing who uses:
-            - KNN Imputation for better null handling (maintains relationships)
-            - Robust Scaling (resistant to outliers)
-            - IQR-based outlier capping (preserves data while handling extremes)
-            - Smart type conversion and validation
-            """,
+            role="Smart Data Preprocessing Expert",
+            goal="Analyze data stats and return ONLY valid JSON with preprocessing strategies",
+            backstory="""You analyze data statistics and return preprocessing recommendations as pure JSON.
+            You consider null percentages, outlier counts, and skewness to make smart decisions.
+            Always return ONLY a valid JSON object, no extra text.""",
             llm=LLM_MODEL
         )
         
-        # Truncate input to avoid token limits
-        input_str = str(task.input)
-        if len(input_str) > 6000:
-            input_str = input_str[:6000] + "...(truncated)"
+        # Truncate input 
+        input_str = str(analysis)
+        if len(input_str) > 4000:
+            input_str = input_str[:4000] + "..."
             
         t = Task(
             description=f"""
-Analyze the dataset and recommend ADVANCED preprocessing strategies:
+Analyze these data statistics and return preprocessing strategies as JSON:
 
-Dataset Info:
 {input_str}
 
-Provide comprehensive strategies for:
-
-1. **Null Value Handling** (Advanced):
-   For each column with nulls, recommend:
-   - **knn**: KNN Imputation (best for maintaining relationships) - use for < 30% nulls
-   - **median**: For numerical with outliers
-   - **mean**: For numerical without outliers  
-   - **mode**: For categorical
-   - **drop**: If > 50% nulls
-
-2. **Outlier Detection & Handling**:
-   - Method: **"iqr_capping"** (IQR method with capping, not removal)
-   - Numerical columns to apply
-   - Threshold: 1.5 * IQR (standard) or 3.0 * IQR (aggressive)
-
-3. **Scaling Strategy**:
-   - **robust**: RobustScaler (best for data with outliers)
-   - **standard**: StandardScaler (if no outliers)
-   - **minmax**: MinMaxScaler (for neural networks)
-   - Specify which columns to scale
-
-4. **Data Validation**:
-   - Check for duplicate rows (recommend drop if > 1%)
-   - Negative values in columns that should be positive
-   - Data type corrections needed
-
-Return detailed JSON with:
+Return ONLY this JSON structure (no other text):
 {{
   "null_strategy": {{
-    "Age": {{"method": "knn", "n_neighbors": 5}},
-    "Balance": {{"method": "median"}},
-    "Geography": {{"method": "mode"}}
+    "column_name": {{"method": "mean|median|mode|knn|drop"}}
   }},
   "outlier_strategy": {{
     "method": "iqr_capping",
     "threshold": 1.5,
-    "columns": ["Balance", "CreditScore", "EstimatedSalary"]
+    "columns": ["col1", "col2"]
   }},
   "scaling_strategy": {{
-    "method": "robust",
-    "columns": ["Age", "Balance", "CreditScore", "EstimatedSalary", "Tenure"]
-  }},
-  "data_validation": {{
-    "remove_duplicates": true,
-    "fix_negatives": ["Balance", "Age"],
-    "type_corrections": {{"Tenure": "int"}}
+    "method": "standard|robust|minmax",
+    "columns": ["col1", "col2"]
   }}
 }}
 
-Prioritize methods that preserve data and maintain relationships.
+Rules:
+- null_strategy: Use median for skewed data, mean for normal, mode for categorical, knn for complex patterns
+- outlier_strategy: Include columns with >5% outliers
+- scaling_strategy: Use robust for data with outliers, standard otherwise
+- ONLY include columns that actually exist in the dataset
+- Return ONLY valid JSON, no explanations
 """,
-            expected_output="Detailed JSON with advanced preprocessing strategies including KNN imputation, outlier capping, and robust scaling",
+            expected_output="Pure JSON with preprocessing strategies",
             agent=strategist
         )
         
         crew = Crew(agents=[strategist], tasks=[t])
         result = crew.kickoff()
         
+        # Parse LLM strategy
+        strategy = parse_json_from_llm(str(result))
+        print(f"[PREPROCESSING] LLM Strategy: {json.dumps(strategy, indent=2)[:500]}")
+        
+        # If CSV path provided, apply preprocessing
+        preprocessed_data = None
+        if csv_path:
+            print(f"[PREPROCESSING] Loading and preprocessing data...")
+            df = pd.read_csv(csv_path)
+            
+            # Apply smart preprocessing
+            df = apply_null_handling(df, strategy, target_col)
+            df = apply_outlier_handling(df, strategy, target_col)
+            # Note: Scaling applied later in model training to avoid data leakage
+            
+            preprocessed_data = {
+                "shape": list(df.shape),
+                "columns": df.columns.tolist(),
+                "null_remaining": int(df.isna().sum().sum())
+            }
+            print(f"[PREPROCESSING] Done! Shape: {df.shape}, Remaining nulls: {preprocessed_data['null_remaining']}")
+        
         return A2AResponse(
             task_id=task.task_id,
             sender="preprocessing-agent",
             status="COMPLETED",
-            output={"preprocessing_strategy": str(result)}
+            output={
+                "preprocessing_strategy": strategy,
+                "preprocessed_data": preprocessed_data,
+                "raw_llm_output": str(result)[:500]
+            }
         )
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"[PREPROCESSING] Error: {e}")
+        import traceback
+        traceback.print_exc()
         raise
