@@ -1,157 +1,113 @@
-# Autonomous Multi-Agent Collaborative Machine Learning Ecosystem
+# AutoEDA - Multi-Agent Machine Learning System
 
-## System Overview
+## What is This?
 
-This system completely automates the creation of machine learning models using **seven specialized AI agents**. The LLM intelligently  feature engineering based on data characterdecides preprocessing strategies, encoding techniques, andistics.
+Ever spent hours cleaning data, trying different encodings, and tuning models? This project does all of that automatically.
 
-**Key Features:**
-- 🎯 **Interactive Input**: Enter CSV path (local or URL) and select target column
-- 🧠 **Smart Preprocessing**: LLM decides null handling (mean/median/mode/KNN) per column
-- 🔧 **Smart Encoding**: LLM decides encoding (one-hot/label/frequency) based on cardinality
-- 📊 **Auto Model Training**: Cross-validation, SMOTE, Optuna tuning, ensemble methods
-- 📝 **Code Generation**: Produces deployable Python code
+You give it a dataset. Seven AI agents work together to:
+1. Understand your data (what's missing, what's weird, what matters)
+2. Clean it up (the smart way - not just "fill with mean everywhere")
+3. Encode categories properly (one-hot for small groups, frequency for large)
+4. Train multiple models and pick the best one
+5. Generate ready-to-use Python code
 
-**Proven Performance:** Tested on multiple datasets, achieving **>80% accuracy** consistently.
+The cool part? **The AI actually thinks about your data**. High skewness? It uses median. Many unique values? It uses frequency encoding. The decisions are context-aware, not hardcoded.
 
 ---
 
-## Architecture
+## How It Works
 
 ```
-User Input (CSV + Target Column)
-        ↓
-┌─────────────────┐
-│ Analysis Agent  │ → Stats, outliers, skewness, null %
-└────────┬────────┘
+Your CSV (local file or URL)
          ↓
-┌─────────────────────┐
-│ Preprocessing Agent │ → LLM decides + executes null/outlier handling
-└────────┬────────────┘
+   Pick target column
          ↓
-┌─────────────────┐
-│  Feature Agent  │ → LLM decides + executes smart encoding
-└────────┬────────┘
-         ↓
-┌─────────────────┐
-│  Model Agent    │ → Train, tune, ensemble, SHAP analysis
-└────────┬────────┘
-         ↓
-┌─────────────────┐
-│  Project Agent  │ → Generate deployable Python code
-└─────────────────┘
+┌────────────────────┐
+│  Analysis Agent    │  Examines: nulls, outliers, distributions
+└─────────┬──────────┘
+          ↓
+┌────────────────────┐
+│ Preprocessing Agent│  LLM decides: how to handle each column's issues
+└─────────┬──────────┘
+          ↓
+┌────────────────────┐
+│   Feature Agent    │  LLM decides: best encoding per column
+└─────────┬──────────┘
+          ↓
+┌────────────────────┐
+│    Model Agent     │  Trains: LogReg, RF, XGBoost, ensembles
+└─────────┬──────────┘
+          ↓
+   Deployable Python code
 ```
 
 ---
 
-## Agent Specifications
+## The Seven Agents
 
-| Agent | Role | Mechanism |
-|-------|------|-----------|
-| **Analysis** | Statistical profiling | Python: outlier detection (IQR), skewness, null %, cardinality |
-| **Insight** | Business insights | LLM-driven pattern recognition |
-| **Preprocessing** | Data cleaning | LLM decides + executes: KNN/median/mode imputation, IQR capping, scaling |
-| **Feature** | Smart encoding | LLM decides + executes: one-hot, label, frequency encoding |
-| **Model** | Training & tuning | Scikit-Learn, XGBoost, Optuna, SMOTE, 5-fold CV, SHAP |
-| **Evaluation** | Performance review | LLM analyzes confusion matrix, suggests improvements |
-| **Project** | Code generation | LLM generates PEP-8 compliant Python code |
-
----
-
-## Technical Stack
-
-| Component | Technology |
-|-----------|------------|
-| Orchestration | Custom Python State Machine / CrewAI |
-| LLM | Google Gemini (`gemini-flash`) |
-| API | FastAPI / Uvicorn |
-| ML | Pandas, NumPy, Scikit-Learn, XGBoost |
-| Optimization | Optuna (Bayesian tuning) |
-| Explainability | SHAP |
-| Imbalance | SMOTE (imbalanced-learn) |
+| Agent | What it Does |
+|-------|--------------|
+| **Analysis** | Counts nulls, detects outliers (IQR), measures skewness, checks cardinality |
+| **Insight** | Generates human-readable observations about your data |
+| **Preprocessing** | LLM picks: median for skewed, mean for normal, mode for categories |
+| **Feature** | LLM picks: one-hot (2-5 values), label (ordinal), frequency (10+ values) |
+| **Model** | Cross-validates, balances with SMOTE, tunes with Optuna, creates ensembles |
+| **Evaluation** | Reviews confusion matrices, suggests improvements |
+| **Project** | Writes clean Python code you can actually use |
 
 ---
 
 ## Quick Start
 
-### 1. Install
 ```bash
+# Clone and install
 git clone https://github.com/Sujal1035-tech/A-Multi-Agent-Collaborative-Machine-Learning-Ecosystem.git
 cd autoeda
 pip install -r requirements.txt
-```
 
-### 2. Configure
-Create `.env` file:
-```env
-GEMINI_API_KEY=your_gemini_api_key_here
-```
+# Add your API key
+echo "GEMINI_API_KEY=your_key_here" > .env
 
-### 3. Run
-```bash
-# Start service
+# Run
 python -m uvicorn unified_service:app --port 8081 --reload
-
-# In another terminal - run workflow
-cd orchestrator
-python main.py
+# In another terminal:
+cd orchestrator && python main.py
 ```
 
-### 4. Interactive Input
+You'll see prompts like:
 ```
-📂 Enter path to CSV file (local path or URL):
+📂 Enter path to CSV file:
 > https://raw.githubusercontent.com/mwaskom/seaborn-data/master/iris.csv
 
-📋 Available columns:
-   1. sepal_length
-   2. sepal_width
-   3. petal_length
-   4. petal_width
-   5. species
-
-🎯 Enter target column name (or number):
+🎯 Enter target column:
 > species
 ```
 
 ---
 
-## Smart Preprocessing (LLM-Driven)
+## What Makes It Smart?
 
-The system uses LLM to decide optimal strategies per column:
+The LLM doesn't just follow rules. It looks at your actual data:
 
-| Data Characteristic | LLM Decision |
-|---------------------|--------------|
-| Null + Skewed data | Median imputation |
-| Null + Normal data | Mean imputation |
-| Null + Categorical | Mode imputation |
-| >5% Outliers | IQR capping |
-| Cardinality 2-5 | One-hot encoding |
-| Cardinality 6-10 | Label encoding |
-| Cardinality >10 | Frequency encoding |
+| It Sees | It Does |
+|---------|---------|
+| Column with 20% nulls + high skew | Fills with median |
+| Column with 3 unique values | One-hot encodes |
+| Column with 500 unique values | Frequency encodes |
+| 15% outliers in a feature | Caps using IQR bounds |
+| Class imbalance | Applies SMOTE |
+| Accuracy below 80% | Triggers Optuna tuning |
 
----
 
-## Output Artifacts
+## Output
 
-Generated project folder contains:
-- `data.csv` - Copy of input dataset
-- `analysis.py` - Complete training pipeline
-- `README.md` - Project documentation
-- `reports/` - Classification reports per model
-- `plots/` - Confusion matrices, correlation heatmaps
-- `stats/` - Performance metrics
+After running, you get a folder with:
+- `data.csv` - Your dataset
+- `analysis.py` - Full training pipeline
+- `reports/` - Classification reports
+- `plots/` - Confusion matrices, heatmaps
 
----
-
-## Test Datasets
-
-| Dataset | Type | URL | Target |
-|---------|------|-----|--------|
-| Iris | Classification | `https://...seaborn.../iris.csv` | species |
-| Titanic | Classification | `https://...datasets.../titanic.csv` | Survived |
-| Tips | Regression | `https://...seaborn.../tips.csv` | tip |
-
----
 
 ## License
 
-MIT License
+MIT - Use it however you want.
