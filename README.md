@@ -2,112 +2,156 @@
 
 ## System Overview
 
-This system completely automates the creation of machine learning models. Instead of relying on a human to manually clean data and select algorithms, it deploys a team of **seven specialized AI agents** that work together to solve the problem.
+This system completely automates the creation of machine learning models using **seven specialized AI agents**. The LLM intelligently  feature engineering based on data characterdecides preprocessing strategies, encoding techniques, andistics.
 
-The process is simple: you provide the data, and the agents handle the rest. They automatically analyze the dataset, fix quality issues, engineer features, and train multiple models to find the best performer. The final result is not just a prediction, but a complete, high-quality Python codebase.
+**Key Features:**
+- 🎯 **Interactive Input**: Enter CSV path (local or URL) and select target column
+- 🧠 **Smart Preprocessing**: LLM decides null handling (mean/median/mode/KNN) per column
+- 🔧 **Smart Encoding**: LLM decides encoding (one-hot/label/frequency) based on cardinality
+- 📊 **Auto Model Training**: Cross-validation, SMOTE, Optuna tuning, ensemble methods
+- 📝 **Code Generation**: Produces deployable Python code
 
-**Proven Performance:**
-The system has been tested on **10 datasets**, consistently achieving an accuracy of **more than 80%**. It automatically generates a comprehensive project folder (e.g., `autoeda_output_1767089156`) containing the full source code and analysis reports.
+**Proven Performance:** Tested on multiple datasets, achieving **>80% accuracy** consistently.
 
-## Architectural Design
+---
 
-The system follows a Microservices-ready Hub-and-Spoke architecture, facilitated by a centralized router (`unified_service.py`).
+## Architecture
 
-### Communication Protocol
-- **Transport**: HTTP/1.1 (REST)
-- **Format**: JSON (Strict Schema Validation via Pydantic)
-- **Routing**: Centralized unification on port 8081 (default), extensible to distributed ports.
+```
+User Input (CSV + Target Column)
+        ↓
+┌─────────────────┐
+│ Analysis Agent  │ → Stats, outliers, skewness, null %
+└────────┬────────┘
+         ↓
+┌─────────────────────┐
+│ Preprocessing Agent │ → LLM decides + executes null/outlier handling
+└────────┬────────────┘
+         ↓
+┌─────────────────┐
+│  Feature Agent  │ → LLM decides + executes smart encoding
+└────────┬────────┘
+         ↓
+┌─────────────────┐
+│  Model Agent    │ → Train, tune, ensemble, SHAP analysis
+└────────┬────────┘
+         ↓
+┌─────────────────┐
+│  Project Agent  │ → Generate deployable Python code
+└─────────────────┘
+```
 
-### Agent Specifications
+---
 
-1.  **Analysis Agent** (`agents/analysis_service`)
-    -   **Role**: Statistical Profiling & Type Inference
-    -   **Mechanism**: Deterministic Pandas/NumPy analysis. Calculates distribution skew, cardinality, and nullity matrices.
+## Agent Specifications
 
-2.  **Insight Agent** (`agents/insight_service`)
-    -   **Role**: Semantic Pattern Recognition
-    -   **Mechanism**: LLM-driven. Synthesizes statistical profiles into actionable business and data science insights.
+| Agent | Role | Mechanism |
+|-------|------|-----------|
+| **Analysis** | Statistical profiling | Python: outlier detection (IQR), skewness, null %, cardinality |
+| **Insight** | Business insights | LLM-driven pattern recognition |
+| **Preprocessing** | Data cleaning | LLM decides + executes: KNN/median/mode imputation, IQR capping, scaling |
+| **Feature** | Smart encoding | LLM decides + executes: one-hot, label, frequency encoding |
+| **Model** | Training & tuning | Scikit-Learn, XGBoost, Optuna, SMOTE, 5-fold CV, SHAP |
+| **Evaluation** | Performance review | LLM analyzes confusion matrix, suggests improvements |
+| **Project** | Code generation | LLM generates PEP-8 compliant Python code |
 
-3.  **Preprocessing Agent** (`agents/preprocessing_service`)
-    -   **Role**: Cleaning Strategy Formulation
-    -   **Mechanism**: LLM-driven. Determines optimal imputation strategies (KNN, Iterative), outlier mitigation (IQR, Z-Score), and scaling techniques based on data distribution.
-
-4.  **Feature Engineering Agent** (`agents/feature_service`)
-    -   **Role**: Feature Space Optimization
-    -   **Mechanism**: LLM-driven. Designs encoding strategies (Target, One-Hot, Ordinal) and transformation pipelines (Log, Polynomial, Interactions) to maximize information gain.
-
-5.  **Model Training Agent** (`agents/model_service`)
-    -   **Role**: Model Training & Hyperparameter Tuning
-    -   **Mechanism**: Computational (Scikit-Learn/XGBoost). Implements 5-fold Cross-Validation, SHAP value calculation, SMOTE for class imbalance, and Voting Classifier ensembling.
-
-6.  **Evaluation Agent** (`agents/evaluation_service`)
-    -   **Role**: Performance Validation
-    -   **Mechanism**: LLM-driven. Analyzes confusion matrices and classification reports to determine if the model meets deployment criteria or requires iterative refinement.
-
-7.  **Project Agent** (`agents/project_service`)
-    -   **Role**: Code Synthesis
-    -   **Mechanism**: LLM-driven. Generates PEP-8 compliant, executable Python code wrapping the entire discovered pipeline.
+---
 
 ## Technical Stack
 
--   **Orchestration Logic**: Custom Python State Machine / CrewAI
--   **LLM Inference Engine**: Groq API (Model: `llama-3.3-70b-versatile`)
--   **API Framework**: FastAPI / Uvicorn
--   **Data Processing**: Pandas, NumPy, Scikit-Learn, XGBoost, Imbalanced-Learn
--   **Optimization**: Optuna (Bayesian Hyperparameter Optimization)
--   **Explainability**: SHAP (Shapley Additive Explanations)
--   **Resilience**: Custom exponential backoff retry logic for API rate limit handling.
+| Component | Technology |
+|-----------|------------|
+| Orchestration | Custom Python State Machine / CrewAI |
+| LLM | Google Gemini (`gemini-flash`) |
+| API | FastAPI / Uvicorn |
+| ML | Pandas, NumPy, Scikit-Learn, XGBoost |
+| Optimization | Optuna (Bayesian tuning) |
+| Explainability | SHAP |
+| Imbalance | SMOTE (imbalanced-learn) |
 
-## Installation and Configuration
+---
 
-### Prerequisites
--   Python 3.9+
--   Valid Groq API Key
+## Quick Start
 
-### Deployment
-
-1.  **Clone Repository**
-    ```bash
-    git clone https://github.com/Sujal1035-tech/A-Multi-Agent-Collaborative-Machine-Learning-Ecosystem.git
-    cd autoeda
-    ```
-
-2.  **Install Dependencies**
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-3.  **Environment Configuration**
-    Create a `.env` file in the root directory:
-    ```env
-    GROQ_API_KEY=your_groq_api_key_here
-    ```
-
-4.  **System Configuration**
-    Modify `config.py` to adjust system parameters:
-    -   `SERVICE_PORT`: API binding port (Default: 8081)
-    -   `LLM_MODEL`: Target LLM model identifier
-    -   `MAX_OPTIMIZATION_ITERATIONS`: Limit for iterative refinement loops
-
-## Execution Manual
-
-### Service Initialization
-Start the unified API server to handle agent requests.
+### 1. Install
 ```bash
-python -m uvicorn unified_service:app --port 8081 --reload
+git clone https://github.com/Sujal1035-tech/A-Multi-Agent-Collaborative-Machine-Learning-Ecosystem.git
+cd autoeda
+pip install -r requirements.txt
 ```
 
-### Workflow Initiation
-Execute the orchestrator to begin the AutoML pipeline.
+### 2. Configure
+Create `.env` file:
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+```
+
+### 3. Run
 ```bash
+# Start service
+python -m uvicorn unified_service:app --port 8081 --reload
+
+# In another terminal - run workflow
 cd orchestrator
 python main.py
 ```
 
+### 4. Interactive Input
+```
+📂 Enter path to CSV file (local path or URL):
+> https://raw.githubusercontent.com/mwaskom/seaborn-data/master/iris.csv
+
+📋 Available columns:
+   1. sepal_length
+   2. sepal_width
+   3. petal_length
+   4. petal_width
+   5. species
+
+🎯 Enter target column name (or number):
+> species
+```
+
+---
+
+## Smart Preprocessing (LLM-Driven)
+
+The system uses LLM to decide optimal strategies per column:
+
+| Data Characteristic | LLM Decision |
+|---------------------|--------------|
+| Null + Skewed data | Median imputation |
+| Null + Normal data | Mean imputation |
+| Null + Categorical | Mode imputation |
+| >5% Outliers | IQR capping |
+| Cardinality 2-5 | One-hot encoding |
+| Cardinality 6-10 | Label encoding |
+| Cardinality >10 | Frequency encoding |
+
+---
+
 ## Output Artifacts
 
-Upon successful execution, the system generates a timestamped directory containing:
--   `analysis.py`: Complete, reproducible training pipeline source code.
--   `reports/`: Detailed classification reports and metric logs.
--   `plots/`: Visualization assets (Feature Importance, SHAP summaries).
--   `stats/`: Raw performance data in JSON format.
+Generated project folder contains:
+- `data.csv` - Copy of input dataset
+- `analysis.py` - Complete training pipeline
+- `README.md` - Project documentation
+- `reports/` - Classification reports per model
+- `plots/` - Confusion matrices, correlation heatmaps
+- `stats/` - Performance metrics
+
+---
+
+## Test Datasets
+
+| Dataset | Type | URL | Target |
+|---------|------|-----|--------|
+| Iris | Classification | `https://...seaborn.../iris.csv` | species |
+| Titanic | Classification | `https://...datasets.../titanic.csv` | Survived |
+| Tips | Regression | `https://...seaborn.../tips.csv` | tip |
+
+---
+
+## License
+
+MIT License
