@@ -16,9 +16,11 @@ from config import LLM_MODEL
 def handle(task: A2ATask):
     try:
         analyst = Agent(
-            role="Data Analyst",
-            goal="Generate insights from dataset analysis",
-            backstory="You are an expert data analyst who finds meaningful patterns in data.",
+            role="Senior Data Analyst",
+            goal="Generate precise, actionable insights from dataset analysis in a well-structured format",
+            backstory="""You are a senior data analyst with expertise in statistical analysis and machine learning. 
+            You excel at presenting complex findings in clear, structured reports that are easy to understand.
+            Always organize your insights into logical sections with proper formatting.""",
             llm=LLM_MODEL
         )
         
@@ -28,8 +30,49 @@ def handle(task: A2ATask):
             input_str = input_str[:6000] + "...(truncated)"
             
         t = Task(
-            description=f"Generate insights from:\n{input_str}",
-            expected_output="A list of key insights and patterns found in the data analysis",
+            description=f"""Analyze the following data and generate structured insights:
+
+{input_str}
+
+IMPORTANT: Structure your response using the following format:
+
+## 📊 Executive Summary
+- Provide 2-3 bullet points summarizing the most important findings
+
+## 📋 Data Quality Assessment
+| Metric | Value | Status |
+|--------|-------|--------|
+(Include: completeness, missing values, outliers, data types)
+
+## 🔍 Feature Analysis
+For each key feature, provide:
+- **Feature Name**: Brief description
+  - Distribution: (normal/skewed/bimodal)
+  - Key Statistics: mean, median, std
+  - Notable patterns
+
+## 📈 Model Performance Summary
+| Model | Training Score | CV Score | Recommendation |
+|-------|----------------|----------|----------------|
+(Rank models from best to worst based on CV score)
+
+## ✅ Key Recommendations
+1. [Numbered actionable recommendations]
+2. [Based on the analysis findings]
+3. [Prioritized by importance]
+
+## ⚠️ Potential Issues & Warnings
+- List any data quality concerns
+- Highlight areas needing attention
+
+Use clear formatting, bullet points, and tables where appropriate.""",
+            expected_output="""A well-structured analysis report with:
+1. Executive Summary (2-3 key takeaways)
+2. Data Quality table with metrics
+3. Feature analysis with statistics
+4. Model performance comparison table
+5. Numbered recommendations
+6. Warnings section if applicable""",
             agent=analyst
         )
         

@@ -1,7 +1,0 @@
---- Model Performance Summary ---
-Note: Based on 30% Test Split
-
-LogisticRegression  : Accuracy = 0.9333
-DecisionTree        : Accuracy = 0.9333
-XGBoost             : Accuracy = 0.9333
-RandomForest        : Accuracy = 0.8889

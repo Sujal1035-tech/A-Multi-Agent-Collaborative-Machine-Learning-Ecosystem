@@ -1,5 +1,5 @@
-Classification Report for RandomForest
-========================================
+Classification Report for Random Forest (Target: ['setosa' 'versicolor' 'virginica']):
+
               precision    recall  f1-score   support
 
       setosa       1.00      1.00      1.00        15
@@ -9,5 +9,3 @@ Classification Report for RandomForest
     accuracy                           0.89        45
    macro avg       0.90      0.89      0.89        45
 weighted avg       0.90      0.89      0.89        45
-
-Accuracy: 0.8889

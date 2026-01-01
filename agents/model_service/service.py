@@ -2,12 +2,15 @@ from fastapi import FastAPI
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, VotingClassifier
+from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge, Lasso, ElasticNet
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, VotingClassifier, GradientBoostingRegressor, GradientBoostingClassifier
 from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.naive_bayes import GaussianNB
 from xgboost import XGBRegressor, XGBClassifier
 from sklearn.metrics import accuracy_score, r2_score
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler, PowerTransformer
 from a2a.schemas import A2ATask, A2AResponse
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
@@ -332,21 +335,46 @@ def handle(task: A2ATask):
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         print(f"[MODEL] Train/test split: {len(X_train)}/{len(X_test)}")
         
+        # Feature Scaling (important for linear models and regularized models)
+        scaler = StandardScaler()
+        X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns, index=X_train.index)
+        X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns, index=X_test.index)
+        print(f"[MODEL] ✅ Applied StandardScaler to features")
+        
+        # Target Transformation for skewed regression targets
+        target_transformer = None
+        y_train_transformed = y_train.copy()
+        if not is_classification:
+            skewness = float(pd.Series(y_train).skew())
+            if abs(skewness) > 0.5:
+                print(f"[MODEL] ⚠️ Target skewness: {skewness:.2f} - applying PowerTransformer")
+                target_transformer = PowerTransformer(method='yeo-johnson')
+                y_train_transformed = target_transformer.fit_transform(y_train.values.reshape(-1, 1)).ravel()
+                print(f"[MODEL] ✅ Applied Yeo-Johnson transformation to target")
+        
         # Define base models
         if is_classification:
             models = {
                 "logistic_regression": LogisticRegression(max_iter=1000),
-                "random_forest": RandomForestClassifier(n_estimators=100, random_state=42),
+                "random_forest": RandomForestClassifier(n_estimators=200, random_state=42),
+                "gradient_boosting": GradientBoostingClassifier(n_estimators=200, learning_rate=0.1, random_state=42),
+                "svm": SVC(kernel='rbf', probability=True, random_state=42),
+                "knn": KNeighborsClassifier(n_neighbors=5),
+                "naive_bayes": GaussianNB(),
                 "decision_tree": DecisionTreeClassifier(random_state=42),
-                "xgboost": XGBClassifier(n_estimators=100, random_state=42, use_label_encoder=False, eval_metric='logloss')
+                "xgboost": XGBClassifier(n_estimators=200, learning_rate=0.1, random_state=42, use_label_encoder=False, eval_metric='logloss')
             }
             metric_name = "accuracy"
         else:
             models = {
                 "linear_regression": LinearRegression(),
-                "random_forest": RandomForestRegressor(n_estimators=100, random_state=42),
+                "ridge": Ridge(alpha=1.0),
+                "lasso": Lasso(alpha=0.1, max_iter=2000),
+                "elastic_net": ElasticNet(alpha=0.1, l1_ratio=0.5, max_iter=2000),
+                "random_forest": RandomForestRegressor(n_estimators=200, random_state=42),
+                "gradient_boosting": GradientBoostingRegressor(n_estimators=200, learning_rate=0.1, random_state=42),
                 "decision_tree": DecisionTreeRegressor(random_state=42),
-                "xgboost": XGBRegressor(n_estimators=100, random_state=42)
+                "xgboost": XGBRegressor(n_estimators=200, learning_rate=0.1, random_state=42)
             }
             metric_name = "r2_score"
         
@@ -356,34 +384,49 @@ def handle(task: A2ATask):
         results = {}
         best_score = -np.inf
         best_model_name = None
+        best_model_obj = None
+        
+        # Use scaled features for training
+        X_train_use = X_train_scaled if not is_classification else X_train
+        X_test_use = X_test_scaled if not is_classification else X_test
+        y_train_use = y_train_transformed if not is_classification else y_train
         
         for i, (name, model) in enumerate(models.items(), 1):
             print(f"[MODEL] [{i}/{len(models)}] Training {name}...")
             
-            # Cross-validation
-            cv_scores = cross_val_score(model, X_train, y_train, cv=5, scoring='accuracy' if is_classification else 'r2')
-            cv_mean = cv_scores.mean()
-            
-            # Train on full training set
-            model.fit(X_train, y_train)
-            y_pred = model.predict(X_test)
-            
-            if is_classification:
-                test_score = accuracy_score(y_test, y_pred)
-            else:
-                test_score = r2_score(y_test, y_pred)
-            
-            print(f"[MODEL] [{i}/{len(models)}] {name}: test={test_score:.4f}, cv_mean={cv_mean:.4f}")
-            
-            results[name] = {
-                "score": float(test_score), 
-                "cv_score": float(cv_mean),
-                "metric": metric_name
-            }
-            
-            if test_score > best_score:
-                best_score = test_score
-                best_model_name = name
+            try:
+                # Cross-validation
+                cv_scores = cross_val_score(model, X_train_use, y_train_use, cv=5, scoring='accuracy' if is_classification else 'r2')
+                cv_mean = cv_scores.mean()
+                
+                # Train on full training set
+                model.fit(X_train_use, y_train_use)
+                y_pred = model.predict(X_test_use)
+                
+                # Inverse transform predictions for regression if target was transformed
+                if target_transformer is not None and not is_classification:
+                    y_pred = target_transformer.inverse_transform(y_pred.reshape(-1, 1)).ravel()
+                
+                if is_classification:
+                    test_score = accuracy_score(y_test, y_pred)
+                else:
+                    test_score = r2_score(y_test, y_pred)
+                
+                print(f"[MODEL] [{i}/{len(models)}] {name}: test={test_score:.4f}, cv_mean={cv_mean:.4f}")
+                
+                results[name] = {
+                    "score": float(test_score), 
+                    "cv_score": float(cv_mean),
+                    "metric": metric_name
+                }
+                
+                if test_score > best_score:
+                    best_score = test_score
+                    best_model_name = name
+                    best_model_obj = model
+            except Exception as e:
+                print(f"[MODEL] [{i}/{len(models)}] {name}: FAILED - {e}")
+                results[name] = {"score": 0.0, "cv_score": 0.0, "metric": metric_name, "error": str(e)}
         
         print(f"[MODEL] Best base model: {best_model_name} ({best_score:.4f})")
         
@@ -392,7 +435,7 @@ def handle(task: A2ATask):
         if best_score < 0.80 and SMART_ML_AVAILABLE:
             print(f"[MODEL] ⚠️  Accuracy below 80% ({best_score:.4f})")
             print(f"[MODEL] 🚀 Triggering hyperparameter tuning...")
-            tuned_result = hyperparameter_tuning(X_train, y_train, X_test, y_test, problem_type)
+            tuned_result = hyperparameter_tuning(X_train_use, y_train_use, X_test_use, y_test, problem_type)
             
             if tuned_result and tuned_result['score'] > best_score:
                 print(f"[MODEL] ✅ Tuning improved score: {best_score:.4f} → {tuned_result['score']:.4f}")
@@ -407,12 +450,17 @@ def handle(task: A2ATask):
         # Create ensemble (Step 3: Ensemble)
         ensemble = create_ensemble(
             {k: v['score'] for k, v in results.items()},
-            X_train, y_train,
+            X_train_use, y_train_use,
             problem_type
         )
         
         if ensemble:
-            y_pred_ensemble = ensemble.predict(X_test)
+            y_pred_ensemble = ensemble.predict(X_test_use)
+            
+            # Inverse transform if target was transformed
+            if target_transformer is not None and not is_classification:
+                y_pred_ensemble = target_transformer.inverse_transform(y_pred_ensemble.reshape(-1, 1)).ravel()
+            
             if is_classification:
                 ensemble_score = accuracy_score(y_test, y_pred_ensemble)
             else:

@@ -15,10 +15,10 @@ def write_project(folder, csv_path, analysis_code, readme, insights=None):
         # Copy local file
         shutil.copy(csv_path, f"{folder}/data.csv")
 
-    open(f"{folder}/analysis.py", "w").write(analysis_code)
-    open(f"{folder}/README.md", "w").write(readme)
+    open(f"{folder}/analysis.py", "w", encoding="utf-8").write(analysis_code)
+    open(f"{folder}/README.md", "w", encoding="utf-8").write(readme)
     
     # Save insights if provided
     if insights:
-        open(f"{folder}/reports/insights.txt", "w").write(insights)
+        open(f"{folder}/reports/insights.txt", "w", encoding="utf-8").write(insights)
 

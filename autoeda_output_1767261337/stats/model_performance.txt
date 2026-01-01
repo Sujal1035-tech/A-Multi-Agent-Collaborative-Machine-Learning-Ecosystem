@@ -1,0 +1,9 @@
+Model Performance Summary
+==============================
+              Model  Accuracy
+Logistic Regression    0.9333
+      Decision Tree    0.9333
+      Random Forest    0.8889
+            XGBoost    0.9333
+
+Note: All models trained using Label Encoding on the target variable 'species'.
