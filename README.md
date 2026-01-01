@@ -104,8 +104,19 @@ The LLM doesn't just follow rules. It looks at your actual data:
 After running, you get a folder with:
 - `data.csv` - Your dataset
 - `analysis.py` - Full training pipeline
-- `reports/` - Classification reports
+- `reports/` - Classification reports, insights
 - `plots/` - Confusion matrices, heatmaps
+
+## Demo Outputs
+
+The repository includes two sample output folders for reference:
+
+| Folder | Dataset | Task | Best Model |
+|--------|---------|------|------------|
+| `autoeda_output_1767260906/` | Auto MPG | Regression | Random Forest (R²: 0.84) |
+| `autoeda_output_1767261337/` | Iris | Classification | XGBoost (Accuracy: 93%) |
+
+These demonstrate the system's capabilities on both regression and classification problems.
 
 
 ## License
