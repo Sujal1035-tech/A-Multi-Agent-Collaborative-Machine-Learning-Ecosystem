@@ -1,4 +1,4 @@
-# AutoEDA - Multi-Agent Machine Learning System
+# AutoML - Multi-Agent Machine Learning System
 
 ## What is This?
 
