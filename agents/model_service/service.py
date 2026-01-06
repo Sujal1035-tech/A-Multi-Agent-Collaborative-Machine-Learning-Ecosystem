@@ -236,7 +236,7 @@ def create_ensemble(models_dict, X_train, y_train, problem_type):
     
     return ensemble
 
-def analyze_feature_importance(best_model, X_test, feature_names, output_folder='plots'):
+def analyze_feature_importance(best_model, X_test, feature_names, output_folder=None):
     """Analyze and visualize feature importance using SHAP"""
     if not SMART_ML_AVAILABLE or not hasattr(shap, 'TreeExplainer'):
         print("[MODEL] ⚠️  SHAP not available, skipping feature importance analysis")
@@ -247,6 +247,8 @@ def analyze_feature_importance(best_model, X_test, feature_names, output_folder=
         
         # Create output folder if needed
         import os
+        if output_folder is None:
+            output_folder = 'plots'
         os.makedirs(output_folder, exist_ok=True)
         
         # Check if model is tree-based
@@ -310,6 +312,7 @@ def handle(task: A2ATask):
         csv_path = task.input["csv_path"]
         prep_strategy = task.input.get("prep_strategy", {})
         feat_strategy = task.input.get("feat_strategy", {})
+        output_folder = task.input.get("output_folder", "plots")
         
         print(f"[MODEL] Loading dataset...")
         df = pd.read_csv(csv_path)
@@ -492,7 +495,7 @@ def handle(task: A2ATask):
                     best_model_obj,
                     X_test,
                     X.columns.tolist(),
-                    output_folder='plots'
+                    output_folder=output_folder
                 )
         
         print(f"[MODEL] Training complete!")

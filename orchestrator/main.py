@@ -150,7 +150,8 @@ def run_workflow():
                     "csv_path": csv_path,
                     "target_column": target_column,
                     "prep_strategy": prep_strategy["output"],
-                    "feat_strategy": feat_strategy["output"]
+                    "feat_strategy": feat_strategy["output"],
+                    "output_folder": OUT
                 }
             )
         )

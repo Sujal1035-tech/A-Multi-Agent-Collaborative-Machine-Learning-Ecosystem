@@ -82,7 +82,7 @@ def evaluation_endpoint(task: A2ATask) -> A2AResponse:
 @app.get("/")
 def root():
     return {
-        "service": "AutoEDA Unified Service",
+        "service": "AutoML Unified Service",
         "version": "3.0",
         "description": "Router to all agents - NO code duplication!",
         "agents": 7,

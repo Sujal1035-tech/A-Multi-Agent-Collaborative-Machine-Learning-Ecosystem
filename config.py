@@ -12,7 +12,7 @@ SERVICE_URL = f"http://{SERVICE_HOST}:{SERVICE_PORT}"
 MAX_OPTIMIZATION_ITERATIONS = 3
 MAX_OPTIMIZATION_ITERATIONS = 3
 TARGET_ACCURACY = 0.85
-LLM_MODEL = "gemini/gemini-flash-latest"  # Verified Alias for 1.5 Flash (High Limit, No 404)  
+LLM_MODEL = "openrouter/google/gemini-2.0-flash-001"  # Using OpenRouter API  
 
 # Agent Ports (for reference if needed)
 ANALYSIS_PORT = 8001

@@ -17,5 +17,7 @@ joblib
 category-encoders
 optuna
 imbalanced-learn
-shap
-langchain-google-genai
+numba>=0.56.0
+llvmlite>=0.39.0
+shap>=0.42.1
+pydantic

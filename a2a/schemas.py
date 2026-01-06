@@ -19,7 +19,6 @@ class A2ATask(BaseModel):
             input=input
         )
 
-
 class A2AResponse(BaseModel):
     task_id: str
     sender: str
