@@ -8,12 +8,13 @@ import requests
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from a2a.client import send_task
+from a2a.client import send_task, send_task_streaming
 from a2a.schemas import A2ATask
 from core.hitl import ask_permission
 from core.file_writer import write_project
 from core.user_input import get_user_input
 from config import SERVICE_URL, SERVICE_PORT, MAX_OPTIMIZATION_ITERATIONS, TARGET_ACCURACY
+from core.trace_logger import PipelineTracer
 
 OUT = os.path.join(PROJECT_ROOT, f"autoeda_output_{int(time.time())}")
 
@@ -26,7 +27,7 @@ def check_service_running():
     try:
         response = requests.get(SERVICE_URL, timeout=1)
         return response.status_code == 200
-    except:
+    except Exception:
         return False
 
 def start_service():
@@ -84,20 +85,25 @@ def run_workflow():
     # Get user input for CSV path and target column
     csv_path, target_column, _ = get_user_input()
 
+    # Initialize pipeline tracer
+    tracer = PipelineTracer(csv_path, target_column)
+
     # Step 1: Analysis
-    print("\n📊 Step 1/6: Analyzing dataset...")
-    analysis = send_task(
+    print("\n📊 Step 1/7: Analyzing dataset...")
+    analysis = send_task_streaming(
         f"{SERVICE_URL}/a2a/analysis",
         A2ATask.create(
             "orchestrator", "analysis-agent",
-            "dataset_analysis", {"csv_path": csv_path, "target_column": target_column}
+            "dataset_analysis", {"csv_path": csv_path, "target_column": target_column, "output_folder": OUT}
         )
     )
     print("✅ Analysis complete!")
+    tracer.record("analysis", analysis["output"])
 
-    # Step 2: Generate Insights (AI)
+    # Step 2: Generate Insights (AI) — uses GROQ_API_KEY_1
+    requests.post(f"{SERVICE_URL}/swap-key/1")
     print("\n💡 Step 2/7: Generating insights (AI)...")
-    insights = send_task(
+    insights = send_task_streaming(
         f"{SERVICE_URL}/a2a/insight",
         A2ATask.create(
             "orchestrator", "insight-agent",
@@ -105,10 +111,12 @@ def run_workflow():
         )
     )
     print("✅ Insights generated!")
+    tracer.record("insights_1", insights["output"])
 
-    # Step 3: Preprocessing Strategy
+    # Step 3: Preprocessing Strategy — uses GROQ_API_KEY_2
+    requests.post(f"{SERVICE_URL}/swap-key/2")
     print("\n🧹 Step 3/7: Determining preprocessing strategy (AI)...")
-    prep_strategy = send_task(
+    prep_strategy = send_task_streaming(
         f"{SERVICE_URL}/a2a/preprocessing",
         A2ATask.create(
             "orchestrator", "preprocessing-agent",
@@ -116,10 +124,11 @@ def run_workflow():
         )
     )
     print("✅ Preprocessing strategy determined!")
+    tracer.record("preprocessing", prep_strategy["output"])
 
-    # Step 4: Feature Engineering
+    # Step 4: Feature Engineering — uses GROQ_API_KEY_2 (same key)
     print("\n🔧 Step 4/7: Feature engineering strategy (AI)...")
-    feat_strategy = send_task(
+    feat_strategy = send_task_streaming(
         f"{SERVICE_URL}/a2a/feature",
         A2ATask.create(
             "orchestrator", "feature-agent",
@@ -130,59 +139,54 @@ def run_workflow():
         )
     )
     print("✅ Feature engineering strategy ready!")
+    tracer.record("feature", feat_strategy["output"])
 
-    # Step 5: Model Training (with optimization loop)
-    print("\n🤖 Step 4/6: Training models...")
-    max_iterations = MAX_OPTIMIZATION_ITERATIONS
-    iteration = 0
-    target_accuracy = TARGET_ACCURACY
-
-    while iteration < max_iterations:
-        print(f"\n  Iteration {iteration + 1}/{max_iterations}")
-        print("  ⏳ Smart ML active: Tuning, SMOTE, CV & SHAP may take a few minutes...")
-        
-        # Train models
-        models = send_task(
-            f"{SERVICE_URL}/a2a/model",
-            A2ATask.create(
-                "orchestrator", "model-agent",
-                "model_training", {
-                    "csv_path": csv_path,
-                    "target_column": target_column,
-                    "prep_strategy": prep_strategy["output"],
-                    "feat_strategy": feat_strategy["output"],
-                    "output_folder": OUT
-                }
-            )
+    # Step 5: Model Training
+    print("\n🤖 Step 5/7: Training models...")
+    print("  ⏳ Smart ML active: Tuning, SMOTE, CV & SHAP may take a few minutes...")
+    
+    # Train models (single pass — internal CV, SMOTE, and Optuna handle optimization)
+    models = send_task_streaming(
+        f"{SERVICE_URL}/a2a/model",
+        A2ATask.create(
+            "orchestrator", "model-agent",
+            "model_training", {
+                "csv_path": csv_path,
+                "target_column": target_column,
+                "prep_strategy": prep_strategy["output"],
+                "feat_strategy": feat_strategy["output"],
+                "output_folder": OUT
+            }
         )
-        
-        print(f"  Best model: {models['output']['best_model']}")
-        print(f"  Score: {models['output']['best_score']:.4f}")
-        
-        # Evaluate
-        evaluation = send_task(
-            f"{SERVICE_URL}/a2a/evaluation",
-            A2ATask.create(
-                "orchestrator", "evaluation-agent",
-                "model_evaluation", models["output"]
-            )
+    )
+    
+    print(f"  Best model: {models['output']['best_model']}")
+    print(f"  Score: {models['output']['best_score']:.4f}")
+    
+    if models['output']['best_score'] >= TARGET_ACCURACY:
+        print(f"  ✅ Target accuracy ({TARGET_ACCURACY}) achieved!")
+    else:
+        print(f"  ⚠️  Below target ({TARGET_ACCURACY}), but internal Optuna tuning already optimized.")
+    
+    # Evaluate
+    evaluation = send_task_streaming(
+        f"{SERVICE_URL}/a2a/evaluation",
+        A2ATask.create(
+            "orchestrator", "evaluation-agent",
+            "model_evaluation", models["output"]
         )
-        
-        # Check if target met
-        if models['output']['best_score'] >= target_accuracy:
-            print(f"  ✅ Target accuracy achieved!")
-            break
-        
-        iteration += 1
-        
-        if iteration < max_iterations:
-            print(f"  ⚠️  Below target ({target_accuracy}), optimizing...")
+    )
 
     print("\n✅ Model training complete!")
+    tracer.record("models", models["output"])
+    tracer.record("evaluation", evaluation["output"])
 
-    # Step 5: Generate insights
-    print("\n💡 Step 5/6: Generating insights (AI)...")
-    insights = send_task(
+    # Swap to GROQ_API_KEY_3 for remaining LLM calls
+    requests.post(f"{SERVICE_URL}/swap-key/3")
+
+    # Step 6: Generate insights — uses GROQ_API_KEY_3
+    print("\n💡 Step 6/7: Generating insights (AI)...")
+    insights = send_task_streaming(
         f"{SERVICE_URL}/a2a/insight",
         A2ATask.create(
             "orchestrator", "insight-agent",
@@ -193,10 +197,11 @@ def run_workflow():
         )
     )
     print("✅ Insights generated!")
+    tracer.record("insights_2", insights["output"])
 
-    # Step 6: Generate Project
-    print("\n📝 Step 6/6: Generating project code (AI)...")
-    project = send_task(
+    # Step 7: Generate Project
+    print("\n📝 Step 7/7: Generating project code (AI)...")
+    project = send_task_streaming(
         f"{SERVICE_URL}/a2a/project",
         A2ATask.create(
             "orchestrator", "project-agent",
@@ -212,6 +217,10 @@ def run_workflow():
         )
     )
     print("✅ Project code generated!")
+    tracer.record("project", project["output"])
+
+    # Generate trace report
+    trace_report = tracer.generate_report()
 
     # Ask permission and write
     print("\n" + "=" * 70)
@@ -221,9 +230,11 @@ def run_workflow():
             csv_path,
             project["output"]["analysis_code"],
             project["output"]["readme"],
-            insights["output"]["insights"]
+            insights["output"]["insights"],
+            trace_report
         )
         print(f"\n🎉 AutoML project created at: {OUT}")
+        print(f"   📋 Pipeline trace saved to: {OUT}/pipeline_trace.md")
         print(f"   Best Model: {models['output']['best_model']}")
         print(f"   Score: {models['output']['best_score']:.4f}")
     print("=" * 70)

@@ -2,6 +2,7 @@ import requests
 from a2a.schemas import A2ATask
 
 import time
+import json
 
 def send_task(url: str, task: A2ATask, timeout: int = 1200, retries: int = 3) -> dict:
     """
@@ -19,7 +20,7 @@ def send_task(url: str, task: A2ATask, timeout: int = 1200, retries: int = 3) ->
     for attempt in range(retries + 1):
         try:
             print(f"  → Sending to {url}" + (f" (Attempt {attempt+1}/{retries+1})" if attempt > 0 else ""))
-            resp = requests.post(url, json=task.dict(), timeout=timeout)
+            resp = requests.post(url, json=task.model_dump(), timeout=timeout)
             
             # If rate limited (429), raise explicitly to catch below
             if resp.status_code == 429:
@@ -54,3 +55,61 @@ def send_task(url: str, task: A2ATask, timeout: int = 1200, retries: int = 3) ->
         except requests.RequestException as e:
             print(f"  ✗ Request failed: {e}")
             raise
+
+
+def send_task_streaming(url: str, task: A2ATask, timeout: int = 1200) -> dict:
+    """
+    Send task to agent with SSE streaming — see live progress.
+    Falls back to regular send_task if streaming fails.
+    
+    Args:
+        url: Agent endpoint URL (will append /stream automatically)
+        task: Task to send
+        timeout: Request timeout in seconds
+    
+    Returns:
+        Response dict (same format as send_task)
+    """
+    # Convert regular URL to streaming URL
+    # /a2a/model -> /a2a/model/stream
+    stream_url = url + "/stream"
+    
+    try:
+        print(f"  → Streaming from {stream_url}")
+        resp = requests.post(stream_url, json=task.model_dump(), timeout=timeout, stream=True)
+        resp.raise_for_status()
+        
+        result = None
+        
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            
+            line_str = line.decode("utf-8")
+            if not line_str.startswith("data: "):
+                continue
+            
+            data = json.loads(line_str[6:])  # Strip "data: " prefix
+            
+            if data["type"] == "log":
+                print(f"  │ {data['message']}")
+            
+            elif data["type"] == "result":
+                result = data["data"]
+            
+            elif data["type"] == "error":
+                raise Exception(f"Agent error: {data['message']}")
+            
+            elif data["type"] == "done":
+                break
+        
+        if result:
+            print(f"  ✓ Streaming complete")
+            return result
+        else:
+            raise Exception("No result received from stream")
+    
+    except Exception as e:
+        # Fallback to regular (non-streaming) request
+        print(f"  ⚠️ Streaming failed ({e}), falling back to regular request...")
+        return send_task(url, task, timeout)

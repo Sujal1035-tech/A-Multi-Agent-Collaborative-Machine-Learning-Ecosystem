@@ -1,7 +1,9 @@
 """
 AutoEDA Configuration
-Centralized configuration for service settings
+Centralized configuration for service settings and per-agent LLM models
 """
+
+import os
 
 # Service Configuration
 SERVICE_PORT = 8081
@@ -10,15 +12,17 @@ SERVICE_URL = f"http://{SERVICE_HOST}:{SERVICE_PORT}"
 
 # Workflow Configuration
 MAX_OPTIMIZATION_ITERATIONS = 3
-MAX_OPTIMIZATION_ITERATIONS = 3
 TARGET_ACCURACY = 0.85
-LLM_MODEL = "openrouter/google/gemini-2.0-flash-001"  # Using OpenRouter API  
 
-# Agent Ports (for reference if needed)
-ANALYSIS_PORT = 8001
-INSIGHT_PORT = 8002
-PROJECT_PORT = 8003
-PREPROCESSING_PORT = 8004
-FEATURE_PORT = 8005
-MODEL_PORT = 8006
-EVALUATION_PORT = 8007
+# =============================================================================
+# LLM Models — All on Groq (3 keys to avoid rate limits)
+# =============================================================================
+GROQ_MODEL = "groq/llama-3.3-70b-versatile"
+
+# Per-agent key assignment:
+#   GROQ_API_KEY_1 → Insight agent
+#   GROQ_API_KEY_2 → Preprocessing + Feature + Evaluation agents
+#   GROQ_API_KEY_3 → Project agent
+
+# Legacy alias
+LLM_MODEL = GROQ_MODEL
