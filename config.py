@@ -17,7 +17,7 @@ TARGET_ACCURACY = 0.85
 # =============================================================================
 # LLM Models — All on Groq (3 keys to avoid rate limits)
 # =============================================================================
-GROQ_MODEL = "groq/llama-3.3-70b-versatile"
+GROQ_MODEL = "groq/llama-3.1-8b-instant"
 
 # Per-agent key assignment:
 #   GROQ_API_KEY_1 → Insight agent

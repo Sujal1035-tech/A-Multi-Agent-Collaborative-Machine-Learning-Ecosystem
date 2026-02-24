@@ -4,8 +4,11 @@ from a2a.schemas import A2ATask, A2AResponse
 from config import GROQ_MODEL
 
 
-def handle(task: A2ATask):
+def handle(task: A2ATask, log_callback=None):
     try:
+        if log_callback:
+            log_callback("[EVALUATION] Starting model evaluation...")
+            
         strategist = Agent(
             role="Model Evaluation Strategist",
             goal="Evaluate model performance and suggest improvements",
@@ -41,6 +44,9 @@ Return JSON with:
 
         crew = Crew(agents=[strategist], tasks=[t])
         result = crew.kickoff()
+        
+        if log_callback:
+            log_callback("[EVALUATION] Evaluation complete.")
 
         return A2AResponse(
             task_id=task.task_id,
@@ -49,5 +55,7 @@ Return JSON with:
             output={"evaluation": str(result)}
         )
     except Exception as e:
+        if log_callback:
+            log_callback(f"[EVALUATION] Error: {e}")
         print(f"Error: {e}")
         raise

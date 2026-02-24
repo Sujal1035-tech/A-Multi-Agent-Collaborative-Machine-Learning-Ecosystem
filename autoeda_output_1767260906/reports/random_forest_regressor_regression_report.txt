@@ -1,9 +1,0 @@
------ Detailed Regression Report: Random Forest Regressor -----
-R2 Score: 0.9136
-Mean Absolute Error (MAE): 1.6129
-Mean Squared Error (MSE): 4.6450
-Root Mean Squared Error (RMSE): 2.1552
-
------ Residuals Summary -----
-Mean Residual: -0.0058
-Std Dev Residual: 2.1688

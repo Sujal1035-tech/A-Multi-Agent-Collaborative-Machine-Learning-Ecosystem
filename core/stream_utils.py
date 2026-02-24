@@ -1,18 +1,21 @@
 """
-Stream Utils — Capture print() output from agents and stream via SSE.
-Runs the agent handler in a thread, captures its stdout, yields lines as SSE events.
+Stream Utils — Thread-safe logging via callbacks.
+Uses a queue to capture logs from agent execution without hijacking sys.stdout.
 """
 
-import sys
-import io
 import json
 import threading
 import queue
+from typing import Callable, Any, Dict, Generator
 
 
-def run_handler_streaming(handler_func, task):
+def run_handler_streaming(handler_func: Callable[[Any, Callable[[str], None]], Any], task: Any) -> Generator[str, None, None]:
     """
-    Run an agent handler and yield its print output + final result as SSE events.
+    Run an agent handler and yield its log output + final result as SSE events.
+    
+    The handler_func must accept two arguments:
+    1. task: The input task object
+    2. log_callback: A function that accepts a string message
     
     Usage in FastAPI:
         return StreamingResponse(run_handler_streaming(handle_analysis, task), media_type="text/event-stream")
@@ -21,27 +24,19 @@ def run_handler_streaming(handler_func, task):
     error_holder = [None]
     log_queue = queue.Queue()
 
+    def log_callback(message: str):
+        """Callback to put messages into the queue."""
+        log_queue.put(message)
+
     def worker():
-        # Redirect this thread's stdout to capture prints
-        old_stdout = sys.stdout
-        capture = io.StringIO()
-
-        class TeeWriter:
-            """Writes to both the original stdout AND the queue for streaming."""
-            def write(self, text):
-                old_stdout.write(text)  # Still print to server console
-                if text.strip():  # Skip empty lines
-                    log_queue.put(text.strip())
-            def flush(self):
-                old_stdout.flush()
-
-        sys.stdout = TeeWriter()
         try:
-            result_holder[0] = handler_func(task)
+            # Pass the log_callback to the handler
+            result_holder[0] = handler_func(task, log_callback)
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             error_holder[0] = str(e)
         finally:
-            sys.stdout = old_stdout
             log_queue.put(None)  # Signal: done
 
     # Start handler in background thread

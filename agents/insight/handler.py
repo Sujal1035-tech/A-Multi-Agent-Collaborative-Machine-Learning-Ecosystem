@@ -4,8 +4,11 @@ from a2a.schemas import A2ATask, A2AResponse
 from config import GROQ_MODEL
 
 
-def handle(task: A2ATask):
+def handle(task: A2ATask, log_callback=None):
     try:
+        if log_callback:
+            log_callback(f"[INSIGHT] Generating insights (Senior Analyst AI)...")
+
         analyst = Agent(
             role="Senior Data Analyst",
             goal="Generate precise, actionable insights from dataset analysis in a well-structured format",
@@ -68,7 +71,16 @@ Use clear formatting, bullet points, and tables where appropriate.""",
         )
         
         crew = Crew(agents=[analyst], tasks=[t])
+        
+        # CrewAI prints to stdout by default. We can't easily capture that unless we redirect stdout again locally here.
+        # But since we fixed the stream_utils to NOT capture stdout, CrewAI logs will appear in server console but NOT in the SSE stream
+        # unless we explicitly intercept them. 
+        # For now, we'll log our own progress.
+        
         insights = crew.kickoff()
+        
+        if log_callback:
+            log_callback(f"[INSIGHT] Insights generated successfully!")
         
         return A2AResponse(
             task_id=task.task_id,
@@ -77,5 +89,7 @@ Use clear formatting, bullet points, and tables where appropriate.""",
             output={"insights": str(insights)}
         )
     except Exception as e:
+        if log_callback:
+            log_callback(f"[INSIGHT] Error: {e}")
         print(f"Error: {e}")
         raise

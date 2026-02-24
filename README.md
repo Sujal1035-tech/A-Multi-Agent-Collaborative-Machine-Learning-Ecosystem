@@ -113,8 +113,8 @@ The repository includes two sample output folders for reference:
 
 | Folder | Dataset | Task | Best Model |
 |--------|---------|------|------------|
-| `autoeda_output_1767260906/` | Auto MPG | Regression | Random Forest (R²: 0.84) |
-| `autoeda_output_1767261337/` | Iris | Classification | XGBoost (Accuracy: 93%) |
+| `autoeda_output_1771922815/` | Auto MPG | Regression | Ensemble (Score: 0.9062) |
+| `autoeda_output_1771923341/` | Breast Cancer | Classification | Random Forest Tuned (Score: 0.9714) |
 
 These demonstrate the system's capabilities on both regression and classification problems.
 

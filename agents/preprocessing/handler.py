@@ -7,10 +7,20 @@ import numpy as np
 from config import GROQ_MODEL
 from core.llm_utils import parse_json_from_llm
 
+try:
+    from sklearn.impute import KNNImputer
+    KNN_AVAILABLE = True
+except ImportError:
+    KNN_AVAILABLE = False
 
-def apply_null_handling(df: pd.DataFrame, strategy: dict, target_col: str) -> pd.DataFrame:
+
+def apply_null_handling(df: pd.DataFrame, strategy: dict, target_col: str, log_callback=None) -> pd.DataFrame:
     """Apply null handling based on LLM strategy"""
-    print(f"[PREPROCESSING] Applying null handling strategies...")
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
+
+    log(f"[PREPROCESSING] Applying null handling strategies...")
     
     null_strategy = strategy.get("null_strategy", {})
     
@@ -27,36 +37,50 @@ def apply_null_handling(df: pd.DataFrame, strategy: dict, target_col: str) -> pd
             if method == "mean" and df[col].dtype in ['int64', 'float64']:
                 fill_val = df[col].mean()
                 df[col] = df[col].fillna(fill_val)
-                print(f"  → {col}: filled with mean ({fill_val:.2f})")
+                log(f"  → {col}: filled with mean ({fill_val:.2f})")
                 
             elif method == "median" and df[col].dtype in ['int64', 'float64']:
                 fill_val = df[col].median()
                 df[col] = df[col].fillna(fill_val)
-                print(f"  → {col}: filled with median ({fill_val:.2f})")
+                log(f"  → {col}: filled with median ({fill_val:.2f})")
                 
             elif method == "mode":
                 fill_val = df[col].mode()[0] if len(df[col].mode()) > 0 else "Unknown"
                 df[col] = df[col].fillna(fill_val)
-                print(f"  → {col}: filled with mode ({fill_val})")
+                log(f"  → {col}: filled with mode ({fill_val})")
                 
             elif method == "knn":
-                # Simple KNN approximation - use median for now
-                fill_val = df[col].median() if df[col].dtype in ['int64', 'float64'] else df[col].mode()[0]
-                df[col] = df[col].fillna(fill_val)
-                print(f"  → {col}: filled with knn-approx ({fill_val})")
+                if KNN_AVAILABLE and df[col].dtype in ['int64', 'float64']:
+                    # Real KNN imputation using sklearn
+                    try:
+                        imputer = KNNImputer(n_neighbors=5)
+                        df[[col]] = imputer.fit_transform(df[[col]])
+                        log(f"  → {col}: filled with KNN imputation (k=5)")
+                    except Exception:
+                        fill_val = df[col].median()
+                        df[col] = df[col].fillna(fill_val)
+                        log(f"  → {col}: KNN failed, used median ({fill_val})")
+                else:
+                    fill_val = df[col].median() if df[col].dtype in ['int64', 'float64'] else df[col].mode()[0]
+                    df[col] = df[col].fillna(fill_val)
+                    log(f"  → {col}: filled with median/mode fallback ({fill_val})")
                 
             elif method == "drop":
                 df = df.dropna(subset=[col])
-                print(f"  → {col}: dropped null rows")
+                log(f"  → {col}: dropped null rows")
         except Exception as e:
-            print(f"  → {col}: error - {e}")
+            log(f"  → {col}: error - {e}")
     
     return df
 
 
-def apply_outlier_handling(df: pd.DataFrame, strategy: dict, target_col: str) -> pd.DataFrame:
+def apply_outlier_handling(df: pd.DataFrame, strategy: dict, target_col: str, log_callback=None) -> pd.DataFrame:
     """Apply outlier handling based on LLM strategy"""
-    print(f"[PREPROCESSING] Applying outlier handling...")
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
+
+    log(f"[PREPROCESSING] Applying outlier handling...")
     
     outlier_strategy = strategy.get("outlier_strategy", {})
     method = outlier_strategy.get("method", "iqr_capping")
@@ -80,14 +104,18 @@ def apply_outlier_handling(df: pd.DataFrame, strategy: dict, target_col: str) ->
         
         outliers_before = ((df[col] < lower) | (df[col] > upper)).sum()
         df[col] = df[col].clip(lower=lower, upper=upper)
-        print(f"  → {col}: capped {outliers_before} outliers [{lower:.2f}, {upper:.2f}]")
+        log(f"  → {col}: capped {outliers_before} outliers [{lower:.2f}, {upper:.2f}]")
     
     return df
 
 
-def apply_scaling(df: pd.DataFrame, strategy: dict, target_col: str) -> pd.DataFrame:
+def apply_scaling(df: pd.DataFrame, strategy: dict, target_col: str, log_callback=None) -> pd.DataFrame:
     """Apply scaling based on LLM strategy"""
-    print(f"[PREPROCESSING] Applying scaling...")
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
+
+    log(f"[PREPROCESSING] Applying scaling...")
     
     scaling_strategy = strategy.get("scaling_strategy", {})
     method = scaling_strategy.get("method", "standard")
@@ -108,7 +136,7 @@ def apply_scaling(df: pd.DataFrame, strategy: dict, target_col: str) -> pd.DataF
                 std_val = df[col].std()
                 if std_val > 0:
                     df[col] = (df[col] - mean_val) / std_val
-                print(f"  → {col}: standard scaled")
+                log(f"  → {col}: standard scaled")
                 
             elif method == "robust":
                 median_val = df[col].median()
@@ -117,16 +145,16 @@ def apply_scaling(df: pd.DataFrame, strategy: dict, target_col: str) -> pd.DataF
                 IQR = Q3 - Q1
                 if IQR > 0:
                     df[col] = (df[col] - median_val) / IQR
-                print(f"  → {col}: robust scaled")
+                log(f"  → {col}: robust scaled")
                 
             elif method == "minmax":
                 min_val = df[col].min()
                 max_val = df[col].max()
                 if max_val > min_val:
                     df[col] = (df[col] - min_val) / (max_val - min_val)
-                print(f"  → {col}: minmax scaled")
+                log(f"  → {col}: minmax scaled")
         except Exception as e:
-            print(f"  → {col}: scaling error - {e}")
+            log(f"  → {col}: scaling error - {e}")
     
     return df
 
@@ -135,7 +163,11 @@ def apply_scaling(df: pd.DataFrame, strategy: dict, target_col: str) -> pd.DataF
 # MAIN HANDLER
 # =============================================================================
 
-def handle(task: A2ATask):
+def handle(task: A2ATask, log_callback=None):
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
+
     try:
         # Get data info from input
         analysis = task.input.get("analysis_summary", task.input)
@@ -196,17 +228,17 @@ Rules:
         
         # Parse LLM strategy
         strategy = parse_json_from_llm(str(result))
-        print(f"[PREPROCESSING] LLM Strategy: {json.dumps(strategy, indent=2)[:500]}")
+        log(f"[PREPROCESSING] LLM Strategy: {json.dumps(strategy, indent=2)[:500]}")
         
         # If CSV path provided, apply preprocessing
         preprocessed_data = None
         if csv_path:
-            print(f"[PREPROCESSING] Loading and preprocessing data...")
+            log(f"[PREPROCESSING] Loading and preprocessing data...")
             df = pd.read_csv(csv_path)
             
             # Apply smart preprocessing
-            df = apply_null_handling(df, strategy, target_col)
-            df = apply_outlier_handling(df, strategy, target_col)
+            df = apply_null_handling(df, strategy, target_col, log_callback)
+            df = apply_outlier_handling(df, strategy, target_col, log_callback)
             # Note: Scaling applied later in model training to avoid data leakage
             
             preprocessed_data = {
@@ -214,7 +246,7 @@ Rules:
                 "columns": df.columns.tolist(),
                 "null_remaining": int(df.isna().sum().sum())
             }
-            print(f"[PREPROCESSING] Done! Shape: {df.shape}, Remaining nulls: {preprocessed_data['null_remaining']}")
+            log(f"[PREPROCESSING] Done! Shape: {df.shape}, Remaining nulls: {preprocessed_data['null_remaining']}")
         
         return A2AResponse(
             task_id=task.task_id,
@@ -227,7 +259,7 @@ Rules:
             }
         )
     except Exception as e:
-        print(f"[PREPROCESSING] Error: {e}")
+        log(f"[PREPROCESSING] Error: {e}")
         import traceback
         traceback.print_exc()
         raise

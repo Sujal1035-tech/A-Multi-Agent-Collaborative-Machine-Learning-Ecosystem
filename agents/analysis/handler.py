@@ -8,7 +8,7 @@ import os
 from a2a.schemas import A2ATask, A2AResponse
 
 
-def generate_eda_plots(df, target_col, output_folder):
+def generate_eda_plots(df, target_col, output_folder, log_callback=None):
     """Generate EDA plots and save to plots/ subfolder."""
     import matplotlib
     matplotlib.use('Agg')  # Non-interactive backend
@@ -21,6 +21,10 @@ def generate_eda_plots(df, target_col, output_folder):
 
     numerical_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
     categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
 
     # 1. Correlation Heatmap
     if len(numerical_cols) >= 2:
@@ -35,9 +39,9 @@ def generate_eda_plots(df, target_col, output_folder):
             plt.savefig(path, dpi=150, bbox_inches='tight')
             plt.close()
             saved.append('correlation_heatmap.png')
-            print('[ANALYSIS] Saved correlation_heatmap.png')
+            log('[ANALYSIS] Saved correlation_heatmap.png')
         except Exception as e:
-            print(f'[ANALYSIS] Skipped heatmap: {e}')
+            log(f'[ANALYSIS] Skipped heatmap: {e}')
 
     # 2. Target Distribution
     if target_col in df.columns:
@@ -56,9 +60,9 @@ def generate_eda_plots(df, target_col, output_folder):
             plt.savefig(path, dpi=150, bbox_inches='tight')
             plt.close()
             saved.append('target_distribution.png')
-            print('[ANALYSIS] Saved target_distribution.png')
+            log('[ANALYSIS] Saved target_distribution.png')
         except Exception as e:
-            print(f'[ANALYSIS] Skipped target plot: {e}')
+            log(f'[ANALYSIS] Skipped target plot: {e}')
 
     # 3. Feature Distributions (grid)
     plot_cols = [c for c in numerical_cols if c != target_col][:12]  # Max 12
@@ -83,9 +87,9 @@ def generate_eda_plots(df, target_col, output_folder):
             plt.savefig(path, dpi=150, bbox_inches='tight')
             plt.close()
             saved.append('feature_distributions.png')
-            print('[ANALYSIS] Saved feature_distributions.png')
+            log('[ANALYSIS] Saved feature_distributions.png')
         except Exception as e:
-            print(f'[ANALYSIS] Skipped distributions: {e}')
+            log(f'[ANALYSIS] Skipped distributions: {e}')
 
     # 4. Box Plots (outlier visualization)
     if plot_cols:
@@ -108,9 +112,9 @@ def generate_eda_plots(df, target_col, output_folder):
             plt.savefig(path, dpi=150, bbox_inches='tight')
             plt.close()
             saved.append('box_plots.png')
-            print('[ANALYSIS] Saved box_plots.png')
+            log('[ANALYSIS] Saved box_plots.png')
         except Exception as e:
-            print(f'[ANALYSIS] Skipped box plots: {e}')
+            log(f'[ANALYSIS] Skipped box plots: {e}')
 
     return saved
 
@@ -205,8 +209,11 @@ def analyze(df: pd.DataFrame, target_column: str = None):
     }
 
 
-def handle_analysis(task: A2ATask) -> A2AResponse:
+def handle_analysis(task: A2ATask, log_callback=None) -> A2AResponse:
     """Handle analysis task"""
+    if log_callback:
+        log_callback(f"[ANALYSIS] Starting analysis on {task.input.get('csv_path')}")
+
     df = pd.read_csv(task.input["csv_path"])
     target_column = task.input.get("target_column")
     result = analyze(df, target_column)
@@ -216,7 +223,14 @@ def handle_analysis(task: A2ATask) -> A2AResponse:
     plots_saved = []
     if output_folder:
         target_col = result.get("target_column", df.columns[-1])
-        plots_saved = generate_eda_plots(df, target_col, output_folder)
+        # Pass callback to generate_eda_plots if needed, or just let it print (which won't be captured)
+        # Better to modify generate_eda_plots too, but for now we'll log high-level
+        if log_callback:
+            log_callback(f"[ANALYSIS] Generating plots in {output_folder}...")
+        
+        # We need to update generate_eda_plots to accept callback if we want granular plot logs
+        # For now, let's wrap the call
+        plots_saved = generate_eda_plots(df, target_col, output_folder, log_callback)
 
     return A2AResponse(
         task_id=task.task_id,
