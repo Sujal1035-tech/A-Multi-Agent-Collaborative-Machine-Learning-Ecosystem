@@ -46,14 +46,21 @@ def run_handler_streaming(handler_func: Callable[[Any, Callable[[str], None]], A
     # Yield log lines as SSE events
     while True:
         try:
-            msg = log_queue.get(timeout=300)  # 5 min max wait per message
+            msg = log_queue.get(timeout=300)  # wait up to 5 min for next log
             if msg is None:
                 break  # Handler finished
             yield f"data: {json.dumps({'type': 'log', 'message': msg})}\n\n"
         except queue.Empty:
-            break  # Timeout
+            # Long-running steps (e.g., Optuna) may be silent for >5 min.
+            # Keep the stream open while worker is still running.
+            if thread.is_alive():
+                yield f"data: {json.dumps({'type': 'log', 'message': '[STREAM] Still processing...'})}\n\n"
+                continue
+            break
 
-    thread.join(timeout=10)
+    # Wait for worker completion before emitting final result/error.
+    if thread.is_alive():
+        thread.join()
 
     # Yield final result or error
     if error_holder[0]:

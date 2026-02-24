@@ -109,12 +109,13 @@ After running, you get a folder with:
 
 ## Demo Outputs
 
-The repository includes two sample output folders for reference:
+The repository includes sample output folders for reference:
 
-| Folder | Dataset | Task | Best Model |
-|--------|---------|------|------------|
-| `autoeda_output_1771922815/` | Auto MPG | Regression | Ensemble (Score: 0.9062) |
-| `autoeda_output_1771923341/` | Breast Cancer | Classification | Random Forest Tuned (Score: 0.9714) |
+| Folder | Dataset | Task | Best Model | Rows | Columns | Compute Time |
+|--------|---------|------|------------|------|---------|--------------|
+| `autoeda_output_1771922815/` | Auto MPG | Regression | Ensemble (Score: 0.9062) | 398 | 9 | 3m 44s |
+| `autoeda_output_1771923341/` | Breast Cancer | Classification | Random Forest Tuned (Score: 0.9714) | 699 | 11 | 3m 20s |
+| `autoeda_output_1771930503/` | Diamonds | Regression | Ensemble (Score: 0.9829) | 53,940 | 10 | m 19.51s |
 
 These demonstrate the system's capabilities on both regression and classification problems.
 

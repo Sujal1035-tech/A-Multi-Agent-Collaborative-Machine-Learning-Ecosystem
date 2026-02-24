@@ -1,7 +1,7 @@
 from crewai import Agent, Task, Crew
 from a2a.schemas import A2ATask, A2AResponse
 
-from config import GROQ_MODEL
+from config import GEMINI_MODEL
 
 
 def handle(task: A2ATask, log_callback=None):
@@ -15,7 +15,7 @@ def handle(task: A2ATask, log_callback=None):
             backstory="""You are a senior data analyst with expertise in statistical analysis and machine learning. 
             You excel at presenting complex findings in clear, structured reports that are easy to understand.
             Always organize your insights into logical sections with proper formatting.""",
-            llm=GROQ_MODEL
+            llm=GEMINI_MODEL
         )
         
         # Truncate input to avoid token limits
@@ -93,3 +93,4 @@ Use clear formatting, bullet points, and tables where appropriate.""",
             log_callback(f"[INSIGHT] Error: {e}")
         print(f"Error: {e}")
         raise
+

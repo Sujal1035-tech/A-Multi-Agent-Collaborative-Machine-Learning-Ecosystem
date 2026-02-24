@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import numpy as np
 
-from config import GROQ_MODEL
+from config import GEMINI_MODEL
 from core.llm_utils import parse_json_from_llm
 
 try:
@@ -180,7 +180,7 @@ def handle(task: A2ATask, log_callback=None):
             backstory="""You analyze data statistics and return preprocessing recommendations as pure JSON.
             You consider null percentages, outlier counts, and skewness to make smart decisions.
             Always return ONLY a valid JSON object, no extra text.""",
-            llm=GROQ_MODEL
+            llm=GEMINI_MODEL
         )
         
         # Truncate input 
@@ -263,3 +263,4 @@ Rules:
         import traceback
         traceback.print_exc()
         raise
+

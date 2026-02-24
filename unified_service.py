@@ -49,15 +49,16 @@ logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# Set up Groq API keys — store all 3, default to KEY_1
+# Set up Gemini API keys — store all 3, default to KEY_1
 import os
-GROQ_KEYS = {
-    "1": os.getenv("GROQ_API_KEY_1", ""),
-    "2": os.getenv("GROQ_API_KEY_2", ""),
-    "3": os.getenv("GROQ_API_KEY_3", ""),
+GEMINI_KEYS = {
+    "1": os.getenv("GEMINI_API_KEY_1", "") or os.getenv("GOOGLE_API_KEY_1", "") or os.getenv("GROQ_API_KEY_1", ""),
+    "2": os.getenv("GEMINI_API_KEY_2", "") or os.getenv("GOOGLE_API_KEY_2", "") or os.getenv("GROQ_API_KEY_2", ""),
+    "3": os.getenv("GEMINI_API_KEY_3", "") or os.getenv("GOOGLE_API_KEY_3", "") or os.getenv("GROQ_API_KEY_3", ""),
 }
-os.environ["GROQ_API_KEY"] = GROQ_KEYS["1"]
-logger.info(f"Loaded {sum(1 for v in GROQ_KEYS.values() if v)} Groq API keys")
+os.environ["GEMINI_API_KEY"] = GEMINI_KEYS["1"]
+os.environ["GOOGLE_API_KEY"] = GEMINI_KEYS["1"]
+logger.info(f"Loaded {sum(1 for v in GEMINI_KEYS.values() if v)} Gemini API keys")
 KEY_LOCK = threading.RLock()
 
 # Load config
@@ -149,25 +150,28 @@ def _select_key_id(agent_name: str, task: A2ATask) -> str | None:
 @contextmanager
 def _key_context(key_id: str | None):
     """Serialize LLM calls while setting key in-process for thread safety."""
-    if not key_id or not GROQ_KEYS.get(key_id):
+    if not key_id or not GEMINI_KEYS.get(key_id):
         yield
         return
 
     with KEY_LOCK:
-        previous_env_key = os.environ.get("GROQ_API_KEY", "")
+        previous_gemini_key = os.environ.get("GEMINI_API_KEY", "")
+        previous_google_key = os.environ.get("GOOGLE_API_KEY", "")
         try:
-            os.environ["GROQ_API_KEY"] = GROQ_KEYS[key_id]
+            os.environ["GEMINI_API_KEY"] = GEMINI_KEYS[key_id]
+            os.environ["GOOGLE_API_KEY"] = GEMINI_KEYS[key_id]
             try:
                 import litellm
-                litellm.api_key = GROQ_KEYS[key_id]
+                litellm.api_key = GEMINI_KEYS[key_id]
             except Exception:
                 pass
             yield
         finally:
-            os.environ["GROQ_API_KEY"] = previous_env_key
+            os.environ["GEMINI_API_KEY"] = previous_gemini_key
+            os.environ["GOOGLE_API_KEY"] = previous_google_key
             try:
                 import litellm
-                litellm.api_key = previous_env_key
+                litellm.api_key = previous_google_key or previous_gemini_key
             except Exception:
                 pass
 
@@ -187,7 +191,7 @@ def _run_with_agent_key(agent_name: str, task: A2ATask, handler, log_callback):
 @app.post("/swap-key/{key_id}")
 def swap_key(key_id: str):
     """Backward-compatible no-op: key is now selected per request."""
-    if key_id not in GROQ_KEYS or not GROQ_KEYS[key_id]:
+    if key_id not in GEMINI_KEYS or not GEMINI_KEYS[key_id]:
         return {"status": "error", "message": f"Key {key_id} not found"}
     return {
         "status": "ok",
@@ -310,10 +314,12 @@ def health():
     return {
         "status": "healthy",
         "service": "unified",
-        "keys_loaded": sum(1 for v in GROQ_KEYS.values() if v)
+        "keys_loaded": sum(1 for v in GEMINI_KEYS.values() if v)
     }
 
 if __name__ == "__main__":
     import uvicorn
     logger.info(f"Starting server on {SERVICE_HOST}:{SERVICE_PORT}...")
     uvicorn.run(app, host=SERVICE_HOST, port=SERVICE_PORT)
+
+

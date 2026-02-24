@@ -10,7 +10,7 @@ the split-before-preprocess pattern to prevent data leakage.
 from crewai import Agent, Task, Crew
 from a2a.schemas import A2ATask, A2AResponse
 
-from config import GROQ_MODEL
+from config import GEMINI_MODEL
 
 
 def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
@@ -639,3 +639,4 @@ def _get_model_instantiation(best_name, best_params, problem_type):
     else:
         cls = "RandomForestClassifier" if problem_type == 'classification' else "RandomForestRegressor"
         return f"model = {cls}(n_estimators=200, random_state=42)"
+

@@ -100,7 +100,7 @@ def run_workflow():
     print("✅ Analysis complete!")
     tracer.record("analysis", analysis["output"])
 
-    # Step 2: Generate Insights (AI) — uses GROQ_API_KEY_1
+    # Step 2: Generate Insights (AI) — uses GEMINI_API_KEY_1
     print("\n⏳ Waiting 25s for rate limit cooldown...")
     time.sleep(25)
     requests.post(f"{SERVICE_URL}/swap-key/1")
@@ -115,7 +115,7 @@ def run_workflow():
     print("✅ Insights generated!")
     tracer.record("insights_1", insights["output"])
 
-    # Step 3: Preprocessing Strategy — uses GROQ_API_KEY_2
+    # Step 3: Preprocessing Strategy — uses GEMINI_API_KEY_2
     print("\n⏳ Waiting 25s for rate limit cooldown...")
     time.sleep(25)
     requests.post(f"{SERVICE_URL}/swap-key/2")
@@ -130,7 +130,7 @@ def run_workflow():
     print("✅ Preprocessing strategy determined!")
     tracer.record("preprocessing", prep_strategy["output"])
 
-    # Step 4: Feature Engineering — uses GROQ_API_KEY_2 (same key)
+    # Step 4: Feature Engineering — uses GEMINI_API_KEY_2 (same key)
     print("\n⏳ Waiting 25s for rate limit cooldown...")
     time.sleep(25)
     print("\n🔧 Step 4/7: Feature engineering strategy (AI)...")
@@ -187,12 +187,12 @@ def run_workflow():
     tracer.record("models", models["output"])
     tracer.record("evaluation", evaluation["output"])
 
-    # Swap to GROQ_API_KEY_3 for remaining LLM calls
+    # Swap to GEMINI_API_KEY_3 for remaining LLM calls
     print("\n⏳ Waiting 25s for rate limit cooldown...")
     time.sleep(25)
     requests.post(f"{SERVICE_URL}/swap-key/3")
 
-    # Step 6: Generate insights — uses GROQ_API_KEY_3
+    # Step 6: Generate insights — uses GEMINI_API_KEY_3
     print("\n💡 Step 6/7: Generating insights (AI)...")
     insights = send_task_streaming(
         f"{SERVICE_URL}/a2a/insight",

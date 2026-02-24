@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import numpy as np
 
-from config import GROQ_MODEL
+from config import GEMINI_MODEL
 from core.llm_utils import parse_json_from_llm
 
 
@@ -115,7 +115,7 @@ def handle(task: A2ATask, log_callback=None):
             - Label for binary or ordinal data
             - Target/frequency encoding for high cardinality (>10 unique)
             Always return ONLY a valid JSON object.""",
-            llm=GROQ_MODEL
+            llm=GEMINI_MODEL
         )
         
         # Truncate input
@@ -240,3 +240,4 @@ Rules:
         import traceback
         traceback.print_exc()
         raise
+

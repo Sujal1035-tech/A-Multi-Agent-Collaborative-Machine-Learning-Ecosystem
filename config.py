@@ -15,14 +15,15 @@ MAX_OPTIMIZATION_ITERATIONS = 3
 TARGET_ACCURACY = 0.85
 
 # =============================================================================
-# LLM Models — All on Groq (3 keys to avoid rate limits)
+# LLM Models - Gemini (3 keys to avoid rate limits)
 # =============================================================================
-GROQ_MODEL = "groq/llama-3.1-8b-instant"
+GEMINI_MODEL = "gemini/gemini-2.5-flash"
 
 # Per-agent key assignment:
-#   GROQ_API_KEY_1 → Insight agent
-#   GROQ_API_KEY_2 → Preprocessing + Feature + Evaluation agents
-#   GROQ_API_KEY_3 → Project agent
+#   GEMINI_API_KEY_1 -> Insight agent
+#   GEMINI_API_KEY_2 -> Preprocessing + Feature + Evaluation agents
+#   GEMINI_API_KEY_3 -> Project agent
 
-# Legacy alias
-LLM_MODEL = GROQ_MODEL
+# Backward-compatible aliases used across handlers
+GROQ_MODEL = GEMINI_MODEL
+LLM_MODEL = GEMINI_MODEL

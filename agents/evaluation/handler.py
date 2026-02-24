@@ -1,7 +1,7 @@
 from crewai import Agent, Task, Crew
 from a2a.schemas import A2ATask, A2AResponse
 
-from config import GROQ_MODEL
+from config import GEMINI_MODEL
 
 
 def handle(task: A2ATask, log_callback=None):
@@ -13,7 +13,7 @@ def handle(task: A2ATask, log_callback=None):
             role="Model Evaluation Strategist",
             goal="Evaluate model performance and suggest improvements",
             backstory="You are an expert in ML model evaluation who provides actionable insights.",
-            llm=GROQ_MODEL
+            llm=GEMINI_MODEL
         )
 
         t = Task(
@@ -59,3 +59,4 @@ Return JSON with:
             log_callback(f"[EVALUATION] Error: {e}")
         print(f"Error: {e}")
         raise
+
