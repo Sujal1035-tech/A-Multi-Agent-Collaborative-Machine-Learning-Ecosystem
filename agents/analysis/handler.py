@@ -4,8 +4,13 @@ Shared logic for analysis functionality
 """
 
 import pandas as pd
+import numpy as np
+import io
 import os
 from a2a.schemas import A2ATask, A2AResponse
+from config import GEMINI_MODEL
+from core.llm_utils import parse_json_from_llm
+from core.data_utils import load_csv_robust, normalize_missing_markers
 
 
 def generate_eda_plots(df, target_col, output_folder, log_callback=None):
@@ -19,7 +24,7 @@ def generate_eda_plots(df, target_col, output_folder, log_callback=None):
     os.makedirs(plots_dir, exist_ok=True)
     saved = []
 
-    numerical_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+    numerical_cols = df.select_dtypes(include=['number']).columns.tolist()
     categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
 
     def log(msg):
@@ -121,7 +126,8 @@ def generate_eda_plots(df, target_col, output_folder, log_callback=None):
 
 def analyze(df: pd.DataFrame, target_column: str = None):
     """Enhanced analysis with detailed stats for smart preprocessing"""
-    numerical_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+    df = normalize_missing_markers(df)
+    numerical_cols = df.select_dtypes(include=['number']).columns.tolist()
     categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
     datetime_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
     
@@ -184,10 +190,12 @@ def analyze(df: pd.DataFrame, target_column: str = None):
             "q3": round(float(df[col].quantile(0.75)), 4),
         }
     
-    # Value counts for categorical columns (top 10)
+    # Value counts for categorical columns (top 10, or top 5 if >100 unique)
     categorical_stats = {}
     for col in categorical_cols:
-        counts = df[col].value_counts().head(10)
+        unique_count = df[col].nunique()
+        limit = 5 if unique_count > 100 else 10
+        counts = df[col].value_counts().head(limit)
         categorical_stats[col] = {str(k): int(v) for k, v in counts.items()}
     
     return {
@@ -214,7 +222,7 @@ def handle_analysis(task: A2ATask, log_callback=None) -> A2AResponse:
     if log_callback:
         log_callback(f"[ANALYSIS] Starting analysis on {task.input.get('csv_path')}")
 
-    df = pd.read_csv(task.input["csv_path"])
+    df = load_csv_robust(task.input["csv_path"])
     target_column = task.input.get("target_column")
     result = analyze(df, target_column)
 

@@ -17,13 +17,9 @@ TARGET_ACCURACY = 0.85
 # =============================================================================
 # LLM Models - Gemini (3 keys to avoid rate limits)
 # =============================================================================
-GEMINI_MODEL = "gemini/gemini-2.5-flash"
+GEMINI_MODEL = "gemini/gemini-2.5-flash-lite"
 
 # Per-agent key assignment:
 #   GEMINI_API_KEY_1 -> Insight agent
 #   GEMINI_API_KEY_2 -> Preprocessing + Feature + Evaluation agents
 #   GEMINI_API_KEY_3 -> Project agent
-
-# Backward-compatible aliases used across handlers
-GROQ_MODEL = GEMINI_MODEL
-LLM_MODEL = GEMINI_MODEL

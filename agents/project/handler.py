@@ -26,7 +26,7 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
         best_model_info = task.input.get('best_model_info', {})
         best_name = best_model_info.get('model', 'Unknown')
         best_params = best_model_info.get('params', {})
-        used_balancing = best_model_info.get('used_balancing', False)
+        ensemble_members = best_model_info.get('ensemble_members', [])
         used_scaling = best_model_info.get('used_scaling', True)
         target_transform = best_model_info.get('target_transform', False)
         problem_type = best_model_info.get('problem_type', 'classification')
@@ -76,6 +76,15 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
         code += "import os\n"
         code += "import warnings\n"
         code += "warnings.filterwarnings('ignore')\n\n"
+        code += "MISSING_TOKENS = {'', 'na', 'n/a', 'null', 'none', 'nan', '?', 'missing'}\n\n"
+        code += "def normalize_missing_markers(df):\n"
+        code += "    text_cols = df.select_dtypes(include=['object', 'string', 'category']).columns\n"
+        code += "    for col in text_cols:\n"
+        code += "        _norm = df[col].astype('string').str.strip().str.lower()\n"
+        code += "        _mask = _norm.isin(MISSING_TOKENS)\n"
+        code += "        if _mask.any():\n"
+        code += "            df.loc[_mask, col] = pd.NA\n"
+        code += "    return df\n\n"
 
         code += "from sklearn.model_selection import train_test_split\n"
         if is_classification:
@@ -86,8 +95,6 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
 
         if target_transform:
             code += "from sklearn.preprocessing import PowerTransformer\n"
-        if used_balancing:
-            code += "try:\n    from imblearn.over_sampling import SMOTE\nexcept ImportError:\n    SMOTE = None\n"
 
         # Metric imports
         if is_classification:
@@ -98,7 +105,7 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
 
         # Model imports — only import what's needed based on best model
         code += "\n# Model Import\n"
-        model_import = _get_model_import(best_name, problem_type)
+        model_import = _get_model_import(best_name, problem_type, ensemble_members)
         code += model_import + "\n"
 
         # --- Setup ---
@@ -115,6 +122,7 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
         code += "# ============================================\n"
         code += "try:\n"
         code += "    data = pd.read_csv('data.csv')\n"
+        code += "    data = normalize_missing_markers(data)\n"
         code += "    print(f'Data loaded. Shape: {data.shape}')\n"
         code += "except Exception as e:\n"
         code += "    print(f'Error loading data: {e}')\n"
@@ -184,16 +192,11 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
                     code += f"    X_train['{col}'] = X_train['{col}'].fillna(_fill)\n"
                     code += f"    X_test['{col}'] = X_test['{col}'].fillna(_fill)\n"
                 elif method == 'knn':
+                    # KNN removed - fall back to median
                     code += f"if '{col}' in X_train.columns and X_train['{col}'].dtype in ['int64', 'float64']:\n"
-                    code += f"    try:\n"
-                    code += f"        from sklearn.impute import KNNImputer\n"
-                    code += f"        _imputer = KNNImputer(n_neighbors=5)\n"
-                    code += f"        X_train[['{col}']] = _imputer.fit_transform(X_train[['{col}']])\n"
-                    code += f"        X_test[['{col}']] = _imputer.transform(X_test[['{col}']])\n"
-                    code += f"    except ImportError:\n"
-                    code += f"        _fill = X_train['{col}'].median()\n"
-                    code += f"        X_train['{col}'] = X_train['{col}'].fillna(_fill)\n"
-                    code += f"        X_test['{col}'] = X_test['{col}'].fillna(_fill)\n"
+                    code += f"    _fill = X_train['{col}'].median()  # Computed from train only\n"
+                    code += f"    X_train['{col}'] = X_train['{col}'].fillna(_fill)\n"
+                    code += f"    X_test['{col}'] = X_test['{col}'].fillna(_fill)\n"
                 elif method == 'drop':
                     code += f"if '{col}' in X_train.columns:\n"
                     code += f"    _mask = X_train['{col}'].notna()\n"
@@ -284,26 +287,14 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
         code += "# 6. ADVANCED PREPROCESSING\n"
         code += "# ============================================\n"
 
-        if used_balancing:
-            code += "\n# Class Imbalance Handling (SMOTE on training data only)\n"
-            code += "if SMOTE is not None:\n"
-            code += "    _vc = y_train.value_counts()\n"
-            code += "    _ratio = _vc.min() / _vc.max()\n"
-            code += "    if _ratio < 0.5:  # Only apply if actually imbalanced\n"
-            code += "        try:\n"
-            code += "            smote = SMOTE(random_state=42)\n"
-            code += "            X_train, y_train = smote.fit_resample(X_train, y_train)\n"
-            code += "            X_train = pd.DataFrame(X_train, columns=X_test.columns)\n"
-            code += "            y_train = pd.Series(y_train)\n"
-            code += "            print(f'SMOTE applied: {len(X_train)} samples')\n"
-            code += "        except Exception as e:\n"
-            code += "            print(f'SMOTE failed: {e}')\n"
-
         if used_scaling:
             code += "\n# Feature Scaling\n"
             code += "scaler = StandardScaler()\n"
             code += "X_train = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)\n"
             code += "X_test = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns)\n"
+
+        if is_classification:
+            code += "\n# Class imbalance policy: no SMOTE; use class_weight='balanced' in supported models.\n"
 
         if target_transform:
             code += "\n# Target Transform (Yeo-Johnson for skewed regression target)\n"
@@ -316,7 +307,7 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
         code += "# ============================================\n"
         code += f"best_name = {best_name!r}\n"
 
-        model_instantiation = _get_model_instantiation(best_name, best_params, problem_type)
+        model_instantiation = _get_model_instantiation(best_name, best_params, problem_type, ensemble_members)
         code += model_instantiation + "\n\n"
 
         # Cross-validation
@@ -492,7 +483,7 @@ python analysis.py
 #### Advanced Processing
 - Train/Test Split: 80/20 {'(Stratified)' if is_classification else ''}
 - Scaling: {'StandardScaler' if used_scaling else 'None'}
-- Class Balancing: {'SMOTE (applied only when ratio < 0.5)' if used_balancing else 'None'}
+- Class Balancing: Model-level class weighting (`class_weight='balanced'` where supported), no SMOTE
 - Target Transform: {'Yeo-Johnson PowerTransformer' if target_transform else 'None'}
 
 #### Model
@@ -524,18 +515,37 @@ python analysis.py
         raise
 
 
-def _get_model_import(best_name, problem_type):
+def _get_model_import(best_name, problem_type, ensemble_members=None):
     """Return the correct import statement for the best model."""
     imports = []
+    ensemble_members = ensemble_members or []
 
     if best_name == 'ensemble':
-        if problem_type == 'classification':
-            imports.append("from sklearn.ensemble import VotingClassifier, GradientBoostingClassifier")
-            imports.append("from sklearn.svm import SVC")
-            imports.append("from xgboost import XGBClassifier")
-        else:
-            imports.append("from sklearn.ensemble import VotingRegressor, RandomForestRegressor, GradientBoostingRegressor")
-            imports.append("from xgboost import XGBRegressor")
+        imports.append("from sklearn.ensemble import VotingClassifier, VotingRegressor")
+        class_import_map = {
+            "GradientBoostingClassifier": "from sklearn.ensemble import GradientBoostingClassifier",
+            "GradientBoostingRegressor": "from sklearn.ensemble import GradientBoostingRegressor",
+            "RandomForestClassifier": "from sklearn.ensemble import RandomForestClassifier",
+            "RandomForestRegressor": "from sklearn.ensemble import RandomForestRegressor",
+            "DecisionTreeClassifier": "from sklearn.tree import DecisionTreeClassifier",
+            "DecisionTreeRegressor": "from sklearn.tree import DecisionTreeRegressor",
+            "SVC": "from sklearn.svm import SVC",
+            "KNeighborsClassifier": "from sklearn.neighbors import KNeighborsClassifier",
+            "GaussianNB": "from sklearn.naive_bayes import GaussianNB",
+            "LogisticRegression": "from sklearn.linear_model import LogisticRegression",
+            "LinearRegression": "from sklearn.linear_model import LinearRegression",
+            "Ridge": "from sklearn.linear_model import Ridge",
+            "Lasso": "from sklearn.linear_model import Lasso",
+            "ElasticNet": "from sklearn.linear_model import ElasticNet",
+            "XGBClassifier": "from xgboost import XGBClassifier",
+            "XGBRegressor": "from xgboost import XGBRegressor",
+            "LGBMClassifier": "from lightgbm import LGBMClassifier",
+            "LGBMRegressor": "from lightgbm import LGBMRegressor",
+        }
+        for member in ensemble_members:
+            cls_name = member.get("class_name")
+            if cls_name in class_import_map:
+                imports.append(class_import_map[cls_name])
     elif 'random_forest' in best_name:
         cls = "RandomForestClassifier" if problem_type == 'classification' else "RandomForestRegressor"
         imports.append(f"from sklearn.ensemble import {cls}")
@@ -544,6 +554,8 @@ def _get_model_import(best_name, problem_type):
         imports.append(f"from sklearn.ensemble import {cls}")
     elif 'xgboost' in best_name:
         imports.append("from xgboost import XGBClassifier, XGBRegressor")
+    elif 'lightgbm' in best_name:
+        imports.append("from lightgbm import LGBMClassifier, LGBMRegressor")
     elif 'logistic' in best_name:
         imports.append("from sklearn.linear_model import LogisticRegression")
     elif 'linear_regression' in best_name:
@@ -569,22 +581,64 @@ def _get_model_import(best_name, problem_type):
         imports.append("from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor")
         imports.append("from xgboost import XGBClassifier, XGBRegressor")
 
-    return "\n".join(imports)
+    # Dedupe while preserving order
+    seen = set()
+    unique_imports = []
+    for imp in imports:
+        if imp not in seen:
+            seen.add(imp)
+            unique_imports.append(imp)
+    return "\n".join(unique_imports)
 
 
-def _get_model_instantiation(best_name, best_params, problem_type):
+def _get_model_instantiation(best_name, best_params, problem_type, ensemble_members=None):
     """Return the correct model instantiation code with exact parameters."""
     params = dict(best_params)
     param_str = ", ".join(f"{k}={repr(v)}" for k, v in params.items())
+    ensemble_members = ensemble_members or []
 
     if best_name == 'ensemble':
+        voting = params.get('ensemble_voting', 'soft' if problem_type == 'classification' else 'average')
+        estimator_lines = []
+        for member in ensemble_members:
+            name = member.get("name")
+            cls_name = member.get("class_name")
+            mparams = dict(member.get("params", {}))
+            if not name or not cls_name:
+                continue
+            if cls_name == "XGBClassifier" and "eval_metric" not in mparams:
+                mparams["eval_metric"] = "logloss"
+            if cls_name in ("LGBMClassifier", "LGBMRegressor") and "verbose" not in mparams:
+                mparams["verbose"] = -1
+            member_param_str = ", ".join(f"{k}={repr(v)}" for k, v in mparams.items())
+            estimator_lines.append(f"        ({repr(name)}, {cls_name}({member_param_str}))")
+
+        if estimator_lines:
+            joined = ",\n".join(estimator_lines)
+            if problem_type == 'classification':
+                return (
+                    "model = VotingClassifier(\n"
+                    "    estimators=[\n"
+                    f"{joined}\n"
+                    "    ],\n"
+                    f"    voting={repr(voting)}\n"
+                    ")"
+                )
+            return (
+                "model = VotingRegressor(\n"
+                "    estimators=[\n"
+                f"{joined}\n"
+                "    ]\n"
+                ")"
+            )
+
+        # Fallback if no serialized members were provided.
         if problem_type == 'classification':
-            voting = params.get('ensemble_voting', 'soft')
             return (
                 "model = VotingClassifier(\n"
                 "    estimators=[\n"
                 "        ('gradient_boosting', GradientBoostingClassifier(n_estimators=200, learning_rate=0.1, random_state=42)),\n"
-                "        ('svm', SVC(kernel='rbf', probability=True, random_state=42)),\n"
+                "        ('svm', SVC(kernel='rbf', probability=True, random_state=42, class_weight='balanced')),\n"
                 "        ('xgboost', XGBClassifier(n_estimators=200, learning_rate=0.1, random_state=42, eval_metric='logloss')),\n"
                 "    ],\n"
                 f"    voting={repr(voting)}\n"
@@ -601,6 +655,8 @@ def _get_model_instantiation(best_name, best_params, problem_type):
         )
     elif 'random_forest' in best_name:
         cls = "RandomForestClassifier" if problem_type == 'classification' else "RandomForestRegressor"
+        if problem_type == 'classification' and 'class_weight' not in params:
+            param_str += ", class_weight='balanced'" if param_str else "class_weight='balanced'"
         return f"model = {cls}({param_str})"
     elif 'gradient_boosting' in best_name:
         cls = "GradientBoostingClassifier" if problem_type == 'classification' else "GradientBoostingRegressor"
@@ -609,9 +665,18 @@ def _get_model_instantiation(best_name, best_params, problem_type):
         cls = "XGBClassifier" if problem_type == 'classification' else "XGBRegressor"
         extra = ", eval_metric='logloss'" if problem_type == 'classification' else ""
         return f"model = {cls}({param_str}{extra})"
+    elif 'lightgbm' in best_name:
+        cls = "LGBMClassifier" if problem_type == 'classification' else "LGBMRegressor"
+        if problem_type == 'classification' and 'class_weight' not in params:
+            param_str += ", class_weight='balanced'" if param_str else "class_weight='balanced'"
+        if 'verbose' not in params:
+            param_str += ", verbose=-1" if param_str else "verbose=-1"
+        return f"model = {cls}({param_str})"
     elif 'logistic' in best_name:
         if 'max_iter' not in params:
             param_str += ", max_iter=1000" if param_str else "max_iter=1000"
+        if problem_type == 'classification' and 'class_weight' not in params:
+            param_str += ", class_weight='balanced'" if param_str else "class_weight='balanced'"
         return f"model = LogisticRegression({param_str})"
     elif 'linear_regression' in best_name:
         return "model = LinearRegression()"
@@ -627,16 +692,21 @@ def _get_model_instantiation(best_name, best_params, problem_type):
         return f"model = ElasticNet({param_str})"
     elif 'decision_tree' in best_name:
         cls = "DecisionTreeClassifier" if problem_type == 'classification' else "DecisionTreeRegressor"
+        if problem_type == 'classification' and 'class_weight' not in params:
+            param_str += ", class_weight='balanced'" if param_str else "class_weight='balanced'"
         return f"model = {cls}({param_str})"
     elif 'naive_bayes' in best_name:
         return "model = GaussianNB()"
     elif 'svm' in best_name or 'svc' in best_name:
         if 'probability' not in params and problem_type == 'classification':
             param_str += ", probability=True" if param_str else "probability=True"
+        if problem_type == 'classification' and 'class_weight' not in params:
+            param_str += ", class_weight='balanced'" if param_str else "class_weight='balanced'"
         return f"model = SVC({param_str})"
     elif 'knn' in best_name:
         return f"model = KNeighborsClassifier({param_str})"
     else:
         cls = "RandomForestClassifier" if problem_type == 'classification' else "RandomForestRegressor"
-        return f"model = {cls}(n_estimators=200, random_state=42)"
-
+        if problem_type == 'classification':
+            return "model = RandomForestClassifier(n_estimators=200, random_state=42, class_weight='balanced')"
+        return "model = RandomForestRegressor(n_estimators=200, random_state=42)"

@@ -3,30 +3,57 @@ import numpy as np
 from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
 from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge, Lasso, ElasticNet
 from sklearn.ensemble import (RandomForestRegressor, RandomForestClassifier,
-                               VotingClassifier, VotingRegressor,
+                               StackingClassifier, StackingRegressor,
                                GradientBoostingRegressor, GradientBoostingClassifier)
 from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.naive_bayes import GaussianNB
 from xgboost import XGBRegressor, XGBClassifier
+
+# LightGBM (optional)
+try:
+    from lightgbm import LGBMRegressor, LGBMClassifier
+    LGBM_AVAILABLE = True
+except ImportError:
+    LGBM_AVAILABLE = False
 from sklearn.metrics import (accuracy_score, r2_score, mean_squared_error, mean_absolute_error,
                              precision_score, recall_score, f1_score, roc_auc_score)
-from sklearn.preprocessing import LabelEncoder, StandardScaler, PowerTransformer
+from sklearn.preprocessing import LabelEncoder, StandardScaler, RobustScaler, PowerTransformer
 from a2a.schemas import A2ATask, A2AResponse
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
+from core.data_utils import load_csv_robust, normalize_missing_markers
+from agents.preprocessing.handler import (
+    fit_null_handling, transform_null_handling,
+    fit_outlier_handling, transform_outlier_handling
+)
+from agents.feature.handler import (
+    fit_datetime, transform_datetime,
+    fit_text_vectorization, transform_text_vectorization,
+    fit_drop_features, transform_drop_features,
+    fit_encoding, transform_encoding
+)
 
 # Smart ML imports
 try:
     import optuna
-    from imblearn.over_sampling import SMOTE
-    import shap
-    SMART_ML_AVAILABLE = True
+    from optuna.pruners import MedianPruner
+    OPTUNA_AVAILABLE = True
 except ImportError:
-    SMART_ML_AVAILABLE = False
-    print("[MODEL] Warning: optuna, imbalanced-learn, or shap not installed. Smart features disabled.")
+    OPTUNA_AVAILABLE = False
+    print("[MODEL] Warning: optuna not installed. Hyperparameter tuning disabled.")
+
+try:
+    import shap
+    SHAP_AVAILABLE = True
+except ImportError:
+    SHAP_AVAILABLE = False
+    print("[MODEL] Warning: shap not installed. SHAP analysis disabled.")
+
+
+
 
 
 # =============================================================================
@@ -46,29 +73,26 @@ def preprocess_data(df, prep_strategy, feat_strategy, target_col, log_callback=N
         if log_callback:
             log_callback(msg)
 
+    # Defensive normalization in case this helper is called standalone.
+    df = normalize_missing_markers(df)
     log(f"[MODEL] Separating features and target...")
 
     X = df.drop(target_col, axis=1)
     y = df[target_col]
 
-    # Encode target if categorical
-    target_le = None
-    if y.dtype == 'object' or str(y.dtype) == 'category':
-        target_le = LabelEncoder()
-        y = pd.Series(target_le.fit_transform(y), index=y.index)
-        log(f"[MODEL] Encoded target: {dict(zip(target_le.classes_, range(len(target_le.classes_))))}")
-
     log(f"[MODEL] Shape: X={X.shape}, y={y.shape}")
-    return X, y, target_le
+    return X, y
 
 
 def fit_preprocess(X_train, y_train, prep_strategy, feat_strategy, target_col, log_callback=None):
     """
     Fit preprocessing on TRAINING data only. Returns transformed X_train and
     a state dict that can be used to transform the test set identically.
-
+    
     This prevents data leakage: statistics (mean, median, frequencies, IQR
     bounds) are computed from training data only.
+    
+    Logic is delegated to preprocessing and feature agent fit functions.
     """
     def log(msg):
         if log_callback:
@@ -76,203 +100,85 @@ def fit_preprocess(X_train, y_train, prep_strategy, feat_strategy, target_col, l
 
     log(f"[MODEL] Fitting preprocessing on training data...")
 
-    X = X_train.copy()
+    X = normalize_missing_markers(X_train.copy())
     original_columns = X.columns.tolist()
-    state = {"fill_values": {}, "clip_bounds": {}, "freq_maps": {},
-             "label_maps": {}, "onehot_cols": [], "dropped_cols": []}
 
     # Parse strategies
     prep = prep_strategy if isinstance(prep_strategy, dict) else {}
     feat = feat_strategy if isinstance(feat_strategy, dict) else {}
-    encoding = feat.get("encoding_strategy", feat.get("feature_strategy", {}).get("encoding_strategy", {}))
 
     # --- STEP 0: NULL HANDLING (fit on train) ---
-    null_strategy = prep.get("null_strategy", prep.get("preprocessing_strategy", {}).get("null_strategy", {}))
-    for col, config in null_strategy.items():
-        if col not in X.columns or col == target_col:
-            continue
-        method = config.get("method", "median") if isinstance(config, dict) else config
-
-        if method == "mean" and X[col].dtype in ['int64', 'float64']:
-            fill_val = X[col].mean()
-            state["fill_values"][col] = fill_val
-            X[col] = X[col].fillna(fill_val)
-            log(f"[MODEL] Null: {col} → mean ({fill_val:.2f})")
-        elif method == "median" and X[col].dtype in ['int64', 'float64']:
-            fill_val = X[col].median()
-            state["fill_values"][col] = fill_val
-            X[col] = X[col].fillna(fill_val)
-            log(f"[MODEL] Null: {col} → median ({fill_val:.2f})")
-        elif method in ("mode", "knn"):
-            # KNN imputation approximated as mode (documented limitation)
-            if len(X[col].mode()) > 0:
-                fill_val = X[col].mode()[0]
-                state["fill_values"][col] = fill_val
-                X[col] = X[col].fillna(fill_val)
-                log(f"[MODEL] Null: {col} → mode ({fill_val})")
-        elif method == "drop":
-            before = len(X)
-            mask = X[col].notna()
-            X = X[mask]
-            y_train = y_train[mask]
-            log(f"[MODEL] Null: {col} → dropped {before - len(X)} rows")
+    X, y_train, null_state = fit_null_handling(X, y_train, prep, target_col, log_callback)
 
     # --- STEP 1: DROP FEATURES ---
-    features_to_drop = feat.get("features_to_drop", feat.get("feature_strategy", {}).get("features_to_drop", []))
-    if not isinstance(features_to_drop, list):
-        features_to_drop = []
-    existing_drop = [c for c in features_to_drop if isinstance(c, str) and c in X.columns and c != target_col]
-
-    # SAFETY GUARD: Never drop more than 50% of columns — LLM may make bad decisions
-    max_drop = max(1, len(X.columns) // 2)
-    if len(existing_drop) > max_drop:
-        log(f"[MODEL] WARNING: LLM wanted to drop {len(existing_drop)} columns but max allowed is {max_drop}. Filtering to only ID/name-like columns.")
-        # Only drop columns that look like IDs or names (not numeric data)
-        safe_drop = [c for c in existing_drop if X[c].dtype == 'object' or
-                     'id' in c.lower() or 'name' in c.lower() or 'unnamed' in c.lower()]
-        existing_drop = safe_drop[:max_drop]
-
-    # Final guard: never allow dropping all features
-    if len(existing_drop) >= len(X.columns):
-        log("[MODEL] WARNING: Drop strategy would remove all features. Ignoring feature drops.")
-        existing_drop = []
-
-    if existing_drop:
-        X = X.drop(columns=existing_drop)
-        state["dropped_cols"] = existing_drop
-        log(f"[MODEL] Dropped features: {existing_drop}")
+    X, drop_state = fit_drop_features(X, feat, target_col, log_callback)
 
     # --- STEP 2: OUTLIER HANDLING (bounds from train) ---
-    outlier_strategy = prep.get("outlier_strategy", prep.get("preprocessing_strategy", {}).get("outlier_strategy", {}))
-    outlier_method = outlier_strategy.get("method", "iqr_capping")
-    outlier_cols = outlier_strategy.get("columns", [])
-    outlier_threshold = outlier_strategy.get("threshold", 1.5)
+    X, outlier_state = fit_outlier_handling(X, prep, target_col, log_callback)
 
-    if outlier_method == "iqr_capping" and outlier_cols:
-        for col in outlier_cols:
-            if col in X.columns and X[col].dtype in ['int64', 'float64']:
-                Q1 = X[col].quantile(0.25)
-                Q3 = X[col].quantile(0.75)
-                IQR = Q3 - Q1
-                lower = Q1 - outlier_threshold * IQR
-                upper = Q3 + outlier_threshold * IQR
-                state["clip_bounds"][col] = (lower, upper)
-                X[col] = X[col].clip(lower=lower, upper=upper)
-                log(f"[MODEL] Outlier cap {col}: [{lower:.2f}, {upper:.2f}]")
+    # --- STEP 3: DATETIME EXTRACTION ---
+    X, datetime_state = fit_datetime(X, feat, target_col, log_callback)
 
-    # --- STEP 3: ENCODING (fit on train) ---
-    # One-hot
-    onehot_cols = encoding.get("onehot", [])
-    for col in onehot_cols:
-        if col in X.columns and X[col].dtype == 'object':
-            dummies = pd.get_dummies(X[col], prefix=col, drop_first=True)
-            state["onehot_cols"].append({"col": col, "categories": list(dummies.columns)})
-            X = pd.concat([X.drop(col, axis=1), dummies], axis=1)
-            log(f"[MODEL] One-hot: {col} ({len(dummies.columns)} cols)")
+    # --- STEP 4: TEXT VECTORIZATION (TF-IDF) ---
+    X, text_state = fit_text_vectorization(X, feat, target_col, log_callback)
 
-    # Label encoding
-    label_cols = encoding.get("label", [])
-    for col in label_cols:
-        if col in X.columns and X[col].dtype == 'object':
-            unique_vals = X[col].unique()
-            mapping = {v: i for i, v in enumerate(unique_vals)}
-            state["label_maps"][col] = mapping
-            X[col] = X[col].map(mapping)
-            log(f"[MODEL] Label encode: {col} ({len(mapping)} classes)")
-
-    # Frequency encoding (safe proxy for target encoding)
-    target_encode_cols = encoding.get("target", [])
-    for col in target_encode_cols:
-        if col in X.columns and X[col].dtype == 'object':
-            freq = X[col].value_counts(normalize=True).to_dict()
-            state["freq_maps"][col] = freq
-            X[col] = X[col].map(freq).fillna(0)
-            log(f"[MODEL] Frequency encode: {col}")
-
-    # Fallback: encode remaining object columns
-    for col in X.select_dtypes(include=['object']).columns:
-        if col == target_col:
-            continue
-        unique_vals = X[col].unique()
-        mapping = {v: i for i, v in enumerate(unique_vals)}
-        state["label_maps"][col] = mapping
-        X[col] = X[col].map(mapping)
-        log(f"[MODEL] Auto-encode: {col}")
+    # --- STEP 5: ENCODING (fit on train) ---
+    X, encoding_state = fit_encoding(X, feat, target_col, log_callback)
 
     # Fill any remaining NaN with median (fitted on train)
+    remaining_medians = {}
     if X.isna().sum().sum() > 0:
         remaining_medians = X.median(numeric_only=True).to_dict()
-        state["remaining_medians"] = remaining_medians
         X = X.fillna(remaining_medians)
         log(f"[MODEL] Filled remaining NaN with train median")
 
     # Final guard: never return an empty feature matrix
     if X.shape[1] == 0:
-        log("[MODEL] WARNING: Preprocessing resulted in 0 features. Restoring original feature columns.")
+        log("[MODEL] WARNING: Preprocessing resulted in 0 features. Restoring original.")
         X = X_train[original_columns].copy()
-        state = {"fill_values": {}, "clip_bounds": {}, "freq_maps": {},
-                 "label_maps": {}, "onehot_cols": [], "dropped_cols": []}
+        null_state = {"fill_values": {}}
+        drop_state = {"dropped_cols": []}
+        outlier_state = {"clip_bounds": {}}
+        datetime_state = {"datetime_cols": []}
+        text_state = {"text_cols": {}}
+        encoding_state = {"onehot_cols": [], "label_maps": {}, "freq_maps": {}}
+        remaining_medians = {}
 
-    # Save final column order for transform
-    state["columns"] = X.columns.tolist()
+    # Combine all state into one dict
+    state = {
+        **null_state,
+        **drop_state,
+        **outlier_state,
+        **datetime_state,
+        **text_state,
+        **encoding_state,
+        "remaining_medians": remaining_medians,
+        "columns": X.columns.tolist()
+    }
 
     return X, y_train, state
-
 
 def transform_preprocess(X_test, state, log_callback=None):
     """
     Apply the same preprocessing to test data using statistics from training.
     No fitting — only transforming using 'state' from fit_preprocess.
+    
+    Logic is delegated to preprocessing and feature agent transform functions.
     """
-    def log(msg):
-        if log_callback:
-            log_callback(msg)
+    X = normalize_missing_markers(X_test.copy())
 
-    X = X_test.copy()
-
-    # Null handling (use train fill values)
-    for col, val in state["fill_values"].items():
-        if col in X.columns:
-            X[col] = X[col].fillna(val)
-
-    # Drop same features
-    existing_drop = [c for c in state["dropped_cols"] if c in X.columns]
-    if existing_drop:
-        X = X.drop(columns=existing_drop)
-
-    # Outlier capping (use train bounds)
-    for col, (lower, upper) in state["clip_bounds"].items():
-        if col in X.columns and X[col].dtype in ['int64', 'float64']:
-            X[col] = X[col].clip(lower=lower, upper=upper)
-
-    # One-hot encoding (use train categories)
-    for info in state["onehot_cols"]:
-        col = info["col"]
-        categories = info["categories"]
-        if col in X.columns and X[col].dtype == 'object':
-            dummies = pd.get_dummies(X[col], prefix=col, drop_first=True)
-            # Align columns: add missing, drop extra
-            for cat in categories:
-                if cat not in dummies.columns:
-                    dummies[cat] = 0
-            dummies = dummies[[c for c in categories if c in dummies.columns]]
-            X = pd.concat([X.drop(col, axis=1), dummies], axis=1)
-
-    # Label encoding (use train mapping)
-    for col, mapping in state["label_maps"].items():
-        if col in X.columns and X[col].dtype == 'object':
-            X[col] = X[col].map(mapping).fillna(-1).astype(int)
-
-    # Frequency encoding (use train frequencies)
-    for col, freq in state["freq_maps"].items():
-        if col in X.columns and X[col].dtype == 'object':
-            X[col] = X[col].map(freq).fillna(0)
+    # Apply all transforms using train-fitted state
+    X = transform_null_handling(X, state, log_callback)
+    X = transform_drop_features(X, state, log_callback)
+    X = transform_outlier_handling(X, state, log_callback)
+    X = transform_datetime(X, state, log_callback)
+    X = transform_text_vectorization(X, state, log_callback)
+    X = transform_encoding(X, state, log_callback)
 
     # Fill remaining NaN
     remaining = state.get("remaining_medians", {})
     if remaining:
         X = X.fillna(remaining)
-    # Final safety: fill anything still missing
     if X.isna().sum().sum() > 0:
         X = X.fillna(0)
 
@@ -285,43 +191,9 @@ def transform_preprocess(X_test, state, log_callback=None):
 
     return X
 
-
 # =============================================================================
-# IMBALANCE & TUNING
+# TUNING
 # =============================================================================
-
-def handle_class_imbalance(X, y, log_callback=None):
-    """Smart imbalance handling with SMOTE. Returns (X, y, actually_applied)."""
-    def log(msg):
-        if log_callback:
-            log_callback(msg)
-
-    if not SMART_ML_AVAILABLE:
-        return X, y, False
-
-    # Check imbalance ratio
-    value_counts = y.value_counts()
-    if len(value_counts) < 2:
-        return X, y, False
-
-    ratio = value_counts.min() / value_counts.max()
-
-    if ratio < 0.5:  # Imbalanced
-        log(f"[MODEL] ⚠ Class imbalance detected (ratio: {ratio:.2f})")
-        log(f"[MODEL] Applying SMOTE to balance classes...")
-
-        try:
-            smote = SMOTE(random_state=42)
-            X_balanced, y_balanced = smote.fit_resample(X, y)
-            log(f"[MODEL] ✓ Balanced: {len(X)} → {len(X_balanced)} samples")
-            return X_balanced, y_balanced, True
-        except Exception as e:
-            log(f"[MODEL] ⚠ SMOTE failed: {e}. Continuing without balancing.")
-            return X, y, False
-
-    log(f"[MODEL] Classes are balanced (ratio: {ratio:.2f}), skipping SMOTE.")
-    return X, y, False
-
 
 def hyperparameter_tuning(X_train, y_train, problem_type, log_callback=None):
     """
@@ -332,7 +204,7 @@ def hyperparameter_tuning(X_train, y_train, problem_type, log_callback=None):
         if log_callback:
             log_callback(msg)
 
-    if not SMART_ML_AVAILABLE:
+    if not OPTUNA_AVAILABLE:
         return None
 
     log(f"[MODEL] Starting Optuna hyperparameter tuning (30 trials)...")
@@ -341,17 +213,25 @@ def hyperparameter_tuning(X_train, y_train, problem_type, log_callback=None):
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     def objective(trial):
-        model_type = trial.suggest_categorical('model', ['random_forest', 'xgboost', 'gradient_boosting'])
+        choices = ['random_forest', 'xgboost', 'gradient_boosting']
+        if LGBM_AVAILABLE:
+            choices.append('lightgbm')
+        model_type = trial.suggest_categorical('model', choices)
 
         if model_type == 'random_forest':
+            # Dynamic min samples based on dataset size to prevent overfitting tiny datasets
+            n_samples = len(X_train)
+            max_leaf_bound = max(4, int(n_samples * 0.05)) # up to 5% of data in leaf
+            
             params = {
                 'n_estimators': trial.suggest_int('rf_n_estimators', 100, 500),
                 'max_depth': trial.suggest_int('rf_max_depth', 5, 30),
-                'min_samples_split': trial.suggest_int('rf_min_samples_split', 2, 10),
-                'min_samples_leaf': trial.suggest_int('rf_min_samples_leaf', 1, 4),
+                'min_samples_split': trial.suggest_int('rf_min_samples_split', 2, 20),
+                'min_samples_leaf': trial.suggest_int('rf_min_samples_leaf', 1, max_leaf_bound),
                 'random_state': 42
             }
             if problem_type == 'classification':
+                params['class_weight'] = 'balanced'
                 model = RandomForestClassifier(**params)
             else:
                 model = RandomForestRegressor(**params)
@@ -363,14 +243,21 @@ def hyperparameter_tuning(X_train, y_train, problem_type, log_callback=None):
                 'max_depth': trial.suggest_int('xgb_max_depth', 3, 10),
                 'subsample': trial.suggest_float('xgb_subsample', 0.6, 1.0),
                 'colsample_bytree': trial.suggest_float('xgb_colsample_bytree', 0.6, 1.0),
+                'reg_alpha': trial.suggest_float('xgb_reg_alpha', 1e-8, 10.0, log=True),
+                'reg_lambda': trial.suggest_float('xgb_reg_lambda', 1e-8, 10.0, log=True),
                 'random_state': 42
             }
             if problem_type == 'classification':
+                # Dynamically calculate scale_pos_weight for binary classification
+                if len(np.unique(y_train)) == 2:
+                    counts = np.bincount(y_train)
+                    scale_weight = float(counts[0]) / counts[1] if counts[1] > 0 else 1.0
+                    params['scale_pos_weight'] = scale_weight
                 model = XGBClassifier(**params, eval_metric='logloss')
             else:
                 model = XGBRegressor(**params)
 
-        else:  # gradient_boosting
+        elif model_type == 'gradient_boosting':
             params = {
                 'n_estimators': trial.suggest_int('gb_n_estimators', 100, 400),
                 'learning_rate': trial.suggest_float('gb_learning_rate', 0.01, 0.3, log=True),
@@ -383,6 +270,29 @@ def hyperparameter_tuning(X_train, y_train, problem_type, log_callback=None):
             else:
                 model = GradientBoostingRegressor(**params)
 
+        elif model_type == 'lightgbm' and LGBM_AVAILABLE:
+            params = {
+                'n_estimators': trial.suggest_int('lgbm_n_estimators', 100, 500),
+                'learning_rate': trial.suggest_float('lgbm_learning_rate', 0.01, 0.3, log=True),
+                'max_depth': trial.suggest_int('lgbm_max_depth', 3, 10),
+                'subsample': trial.suggest_float('lgbm_subsample', 0.6, 1.0),
+                'colsample_bytree': trial.suggest_float('lgbm_colsample_bytree', 0.6, 1.0),
+                'random_state': 42,
+                'verbose': -1
+            }
+            if problem_type == 'classification':
+                params['class_weight'] = 'balanced'
+                model = LGBMClassifier(**params)
+            else:
+                model = LGBMRegressor(**params)
+        else:
+            params = {'random_state': 42}
+            if problem_type == 'classification':
+                params['class_weight'] = 'balanced'
+                model = RandomForestClassifier(**params)
+            else:
+                model = RandomForestRegressor(**params)
+
         # Use CROSS-VALIDATION for scoring (prevents test-set overfitting)
         scoring = 'accuracy' if problem_type == 'classification' else 'r2'
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42) if problem_type == 'classification' else 5
@@ -390,8 +300,8 @@ def hyperparameter_tuning(X_train, y_train, problem_type, log_callback=None):
         return cv_scores.mean()
 
     # Run optimization
-    study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=30, show_progress_bar=False)
+    study = optuna.create_study(direction='maximize', pruner=MedianPruner())
+    study.optimize(objective, n_trials=30, timeout=120, show_progress_bar=False)
 
     log(f"[MODEL] ✓ Optuna best CV score: {study.best_value:.4f}")
     log(f"[MODEL] Best params: {study.best_params}")
@@ -404,20 +314,32 @@ def hyperparameter_tuning(X_train, y_train, problem_type, log_callback=None):
     clean_params = {}
     for k, v in best_params.items():
         # Remove prefix like 'rf_', 'xgb_', 'gb_'
-        clean_key = k.split('_', 1)[1] if '_' in k and k.split('_')[0] in ('rf', 'xgb', 'gb') else k
+        clean_key = k.split('_', 1)[1] if '_' in k and k.split('_')[0] in ('rf', 'xgb', 'gb', 'lgbm') else k
         clean_params[clean_key] = v
     clean_params['random_state'] = 42
 
     if model_type == 'random_forest':
         if problem_type == 'classification':
+            clean_params.setdefault('class_weight', 'balanced')
             best_model = RandomForestClassifier(**clean_params)
         else:
             best_model = RandomForestRegressor(**clean_params)
     elif model_type == 'xgboost':
         if problem_type == 'classification':
+            if len(np.unique(y_train)) == 2:
+                 counts = np.bincount(y_train)
+                 scale_weight = float(counts[0]) / counts[1] if counts[1] > 0 else 1.0
+                 clean_params.setdefault('scale_pos_weight', scale_weight)
             best_model = XGBClassifier(**clean_params, eval_metric='logloss')
         else:
             best_model = XGBRegressor(**clean_params)
+    elif model_type == 'lightgbm' and LGBM_AVAILABLE:
+        clean_params['verbose'] = -1
+        if problem_type == 'classification':
+            clean_params.setdefault('class_weight', 'balanced')
+            best_model = LGBMClassifier(**clean_params)
+        else:
+            best_model = LGBMRegressor(**clean_params)
     else:
         if problem_type == 'classification':
             best_model = GradientBoostingClassifier(**clean_params)
@@ -437,6 +359,7 @@ def hyperparameter_tuning(X_train, y_train, problem_type, log_callback=None):
 def create_ensemble(trained_models, X_train, y_train, problem_type, log_callback=None):
     """
     Create voting ensemble from TOP trained model OBJECTS (not re-created).
+    Returns (ensemble_model_or_None, ensemble_members_metadata).
     """
     def log(msg):
         if log_callback:
@@ -447,30 +370,53 @@ def create_ensemble(trained_models, X_train, y_train, problem_type, log_callback
     # Sort by score, pick top 3
     sorted_models = sorted(trained_models.items(), key=lambda x: x[1]["score"], reverse=True)
 
+    linear_model_names = {'logistic_regression', 'linear_regression', 'naive_bayes'}
     estimators = []
     for name, info in sorted_models[:3]:
         model_obj = info.get("model_obj")
         if model_obj is None:
             continue
         # Skip simple linear models (they don't add much to ensembles)
-        if name in ('logistic_regression', 'linear_regression', 'naive_bayes'):
+        if name in linear_model_names or any(tok in name for tok in ("logistic", "linear", "naive_bayes")):
             continue
-        # SVC with soft voting needs probability=True, which it already has
         estimators.append((name, model_obj))
 
     if len(estimators) < 2:
-        log(f"[MODEL] Not enough models for ensemble (need ≥ 2, got {len(estimators)})")
-        return None
+        log(f"[MODEL] Not enough models for ensemble (need >= 2, got {len(estimators)})")
+        return None, []
 
     if problem_type == 'classification':
-        ensemble = VotingClassifier(estimators=estimators, voting='soft')
+        final_estimator = LogisticRegression(max_iter=1000, random_state=42)
+        ensemble = StackingClassifier(estimators=estimators, final_estimator=final_estimator, cv=5)
     else:
-        ensemble = VotingRegressor(estimators=estimators)
+        final_estimator = Ridge(alpha=1.0, random_state=42)
+        ensemble = StackingRegressor(estimators=estimators, final_estimator=final_estimator, cv=5)
 
     ensemble.fit(X_train, y_train)
-    log(f"[MODEL] ✓ Ensemble created from {len(estimators)} models: {[n for n, _ in estimators]}")
+    log(f"[MODEL] Stacking Ensemble created from {len(estimators)} models: {[n for n, _ in estimators]}")
 
-    return ensemble
+    ensemble_members = []
+    for name, model_obj in estimators:
+        params = model_obj.get_params(deep=False) if hasattr(model_obj, "get_params") else {}
+        safe_params = {}
+        for k, v in params.items():
+            if isinstance(v, (np.integer,)):
+                safe_params[k] = int(v)
+            elif isinstance(v, (np.floating,)):
+                safe_params[k] = float(v)
+            elif isinstance(v, (np.bool_,)):
+                safe_params[k] = bool(v)
+            elif isinstance(v, (str, int, float, bool)) or v is None:
+                safe_params[k] = v
+            else:
+                safe_params[k] = str(v)
+        ensemble_members.append({
+            "name": name,
+            "class_name": model_obj.__class__.__name__,
+            "params": safe_params
+        })
+
+    return ensemble, ensemble_members
 
 
 def analyze_feature_importance(best_model, X_test_scaled, feature_names, output_folder=None, log_callback=None):
@@ -479,7 +425,7 @@ def analyze_feature_importance(best_model, X_test_scaled, feature_names, output_
         if log_callback:
             log_callback(msg)
 
-    if not SMART_ML_AVAILABLE or not hasattr(shap, 'TreeExplainer'):
+    if not SHAP_AVAILABLE or not hasattr(shap, 'TreeExplainer'):
         log("[MODEL] ⚠ SHAP not available, skipping feature importance analysis")
         return None
 
@@ -492,18 +438,45 @@ def analyze_feature_importance(best_model, X_test_scaled, feature_names, output_
         os.makedirs(output_folder, exist_ok=True)
 
         # Check if model is tree-based
-        tree_models = (RandomForestClassifier, RandomForestRegressor,
+        tree_models = [RandomForestClassifier, RandomForestRegressor,
                       XGBClassifier, XGBRegressor,
                       GradientBoostingClassifier, GradientBoostingRegressor,
-                      DecisionTreeClassifier, DecisionTreeRegressor)
+                      DecisionTreeClassifier, DecisionTreeRegressor]
+        if LGBM_AVAILABLE:
+            tree_models.extend([LGBMClassifier, LGBMRegressor])
+        tree_models = tuple(tree_models)
 
         if not isinstance(best_model, tree_models):
             log("[MODEL] ⚠ Model is not tree-based, skipping SHAP analysis")
             return None
 
+        # Normalize SHAP input to numeric matrix to avoid object/string conversion errors.
+        if isinstance(X_test_scaled, pd.DataFrame):
+            X_for_shap = X_test_scaled.copy()
+        else:
+            X_for_shap = pd.DataFrame(X_test_scaled, columns=feature_names[: np.asarray(X_test_scaled).shape[1]])
+
+        for col in X_for_shap.columns:
+            if not pd.api.types.is_numeric_dtype(X_for_shap[col]):
+                # Attempt to clean brackets and coerce
+                # For things like "[5.054E-1]" or "['5.054']"
+                cleaned = X_for_shap[col].astype(str).str.strip().str.replace(r"[\[\]'\"]", "", regex=True)
+                X_for_shap[col] = pd.to_numeric(cleaned, errors='coerce')
+
+        if X_for_shap.isna().sum().sum() > 0:
+            X_for_shap = X_for_shap.fillna(0)
+
+        # Force all to float, and explicitly handle any remaining non-convertible types
+        try:
+             X_for_shap = X_for_shap.astype(float)
+        except Exception as e:
+             log(f"[MODEL] ⚠ SHAP cast failed ({e}). Forcing numeric coercion.")
+             # Bruteforce matrix conversion if .astype(float) still sees mixed types
+             X_for_shap = X_for_shap.apply(pd.to_numeric, errors='coerce').fillna(0).astype(float)
+
         # Create SHAP explainer
         explainer = shap.TreeExplainer(best_model)
-        shap_values = explainer.shap_values(X_test_scaled)
+        shap_values = explainer.shap_values(X_for_shap)
 
         # Handle multi-class output
         if isinstance(shap_values, list):
@@ -532,7 +505,7 @@ def analyze_feature_importance(best_model, X_test_scaled, feature_names, output_
 
         # Save summary plot
         plt.figure(figsize=(10, 6))
-        shap.summary_plot(shap_values, X_test_scaled, feature_names=feature_names, show=False, max_display=15)
+        shap.summary_plot(shap_values, X_for_shap, feature_names=feature_names, show=False, max_display=15)
         plt.tight_layout()
         plt.savefig(f'{output_folder}/shap_summary.png', dpi=150, bbox_inches='tight')
         plt.close()
@@ -621,18 +594,26 @@ def handle(task: A2ATask, log_callback=None):
         output_folder = task.input.get("output_folder", "plots")
 
         log(f"[MODEL] Loading dataset...")
-        df = pd.read_csv(csv_path)
+        df = load_csv_robust(csv_path)
+        df = normalize_missing_markers(df)
 
         # Use provided target column or fall back to last column
         target_col = task.input.get("target_column", df.columns[-1])
         log(f"[MODEL] Target column: {target_col}")
 
-        # --- Separate X/y and encode target ONLY ---
-        X, y, target_le = preprocess_data(df, prep_strategy, feat_strategy, target_col, log_callback)
+        # --- Separate X/y ---
+        X, y = preprocess_data(df, prep_strategy, feat_strategy, target_col, log_callback)
 
         # --- Detect problem type ROBUSTLY ---
         problem_type = detect_problem_type(y, target_col, log_callback)
         is_classification = problem_type == "classification"
+
+        # --- Encode target ALWAYS for classification (XGBoost expects 0, 1, 2...) ---
+        target_le = None
+        if is_classification:
+            target_le = LabelEncoder()
+            y = pd.Series(target_le.fit_transform(y), index=y.index)
+            log(f"[MODEL] Target encoded: {dict(zip(target_le.classes_, range(len(target_le.classes_))))}")
 
         # --- SPLIT FIRST to prevent data leakage ---
         split_kwargs = {"test_size": 0.2, "random_state": 42}
@@ -649,23 +630,42 @@ def handle(task: A2ATask, log_callback=None):
         X_test = transform_preprocess(X_test, preprocess_state, log_callback)
         log(f"[MODEL] After preprocessing: train={X_train.shape}, test={X_test.shape}")
 
-        # --- Handle class imbalance on TRAINING data only ---
-        actually_balanced = False
-        if is_classification and SMART_ML_AVAILABLE:
-            X_train, y_train, actually_balanced = handle_class_imbalance(X_train, y_train, log_callback)
-
         # --- Feature Scaling ---
-        scaler = StandardScaler()
-        X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
-        X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns)
-        log(f"[MODEL] ✓ Applied StandardScaler")
+        # Robust scaling chaining into Standard scaling
+        robust_scaler = RobustScaler()
+        std_scaler = StandardScaler()
+        
+        # Fit-transform train
+        X_train_r = robust_scaler.fit_transform(X_train)
+        X_train_s = std_scaler.fit_transform(X_train_r)
+        X_train_scaled = pd.DataFrame(X_train_s, columns=X_train.columns)
+        
+        # Transform test
+        X_test_r = robust_scaler.transform(X_test)
+        X_test_s = std_scaler.transform(X_test_r)
+        X_test_scaled = pd.DataFrame(X_test_s, columns=X_test.columns)
+        
+        log(f"[MODEL] \u2713 Applied RobustScaler + StandardScaler pipeline")
+
+        # --- Class imbalance handling policy ---
+        # Calculate dynamic scale_pos_weight for XGBoost
+        scale_pos_weight = 1.0
+        actually_balanced = False
+        if is_classification:
+            _vc = y_train.value_counts()
+            if len(_vc) >= 2:
+                # Assuming binary classification for simple dynamic weighting
+                if len(_vc) == 2:
+                     scale_pos_weight = float(np.sum(y_train == 0)) / np.sum(y_train == 1) if np.sum(y_train == 1) > 0 else 1.0
+                _ratio = _vc.min() / _vc.max()
+                log(f"[MODEL] Class ratio: {_ratio:.2f} (SMOTE disabled; using class-weighted models with scale_pos_weight={scale_pos_weight:.2f})")
 
         # --- Target Transformation for skewed regression targets ---
         target_transformer = None
         y_train_use = y_train.copy()
         if not is_classification:
             skewness = float(pd.Series(y_train).skew())
-            if abs(skewness) > 0.5:
+            if abs(skewness) > 1.0:
                 log(f"[MODEL] ⚠ Target skewness: {skewness:.2f} — applying PowerTransformer")
                 target_transformer = PowerTransformer(method='yeo-johnson')
                 y_train_use = target_transformer.fit_transform(y_train.values.reshape(-1, 1)).ravel()
@@ -674,27 +674,37 @@ def handle(task: A2ATask, log_callback=None):
         # --- Define base models ---
         if is_classification:
             models = {
-                "logistic_regression": LogisticRegression(max_iter=1000),
-                "random_forest": RandomForestClassifier(n_estimators=200, random_state=42),
+                "logistic_regression": LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced'),
+                "random_forest": RandomForestClassifier(n_estimators=200, random_state=42, class_weight='balanced'),
                 "gradient_boosting": GradientBoostingClassifier(n_estimators=200, learning_rate=0.1, random_state=42),
-                "svm": SVC(kernel='rbf', probability=True, random_state=42),
+                "svm": SVC(kernel='rbf', probability=True, random_state=42, class_weight='balanced'),
                 "knn": KNeighborsClassifier(n_neighbors=5),
                 "naive_bayes": GaussianNB(),
-                "decision_tree": DecisionTreeClassifier(random_state=42),
-                "xgboost": XGBClassifier(n_estimators=200, learning_rate=0.1, random_state=42, eval_metric='logloss')
+                "decision_tree": DecisionTreeClassifier(random_state=42, class_weight='balanced'),
+                "xgboost": XGBClassifier(n_estimators=200, learning_rate=0.1, random_state=42, eval_metric='logloss', scale_pos_weight=scale_pos_weight),
             }
+            if LGBM_AVAILABLE:
+                models["lightgbm"] = LGBMClassifier(
+                    n_estimators=200,
+                    learning_rate=0.1,
+                    random_state=42,
+                    class_weight='balanced',
+                    verbose=-1
+                )
             metric_name = "accuracy"
         else:
             models = {
                 "linear_regression": LinearRegression(),
-                "ridge": Ridge(alpha=1.0),
-                "lasso": Lasso(alpha=0.1, max_iter=2000),
-                "elastic_net": ElasticNet(alpha=0.1, l1_ratio=0.5, max_iter=2000),
+                "ridge": Ridge(alpha=1.0, random_state=42),
+                "lasso": Lasso(alpha=0.1, max_iter=2000, random_state=42),
+                "elastic_net": ElasticNet(alpha=0.1, l1_ratio=0.5, max_iter=2000, random_state=42),
                 "random_forest": RandomForestRegressor(n_estimators=200, random_state=42),
                 "gradient_boosting": GradientBoostingRegressor(n_estimators=200, learning_rate=0.1, random_state=42),
                 "decision_tree": DecisionTreeRegressor(random_state=42),
-                "xgboost": XGBRegressor(n_estimators=200, learning_rate=0.1, random_state=42)
+                "xgboost": XGBRegressor(n_estimators=200, learning_rate=0.1, random_state=42),
             }
+            if LGBM_AVAILABLE:
+                models["lightgbm"] = LGBMRegressor(n_estimators=200, learning_rate=0.1, random_state=42, verbose=-1)
             metric_name = "r2_score"
 
         log(f"[MODEL] Training {len(models)} base models with cross-validation...")
@@ -726,10 +736,14 @@ def handle(task: A2ATask, log_callback=None):
 
                 # Train on full training set
                 model.fit(X_train_use, y_train_use)
+                
+                # Train score for overfitting diagnostics
+                y_pred_train = model.predict(X_train_use)
                 y_pred = model.predict(X_test_use)
 
                 # Inverse transform predictions for regression
                 if target_transformer is not None and not is_classification:
+                    y_pred_train = target_transformer.inverse_transform(y_pred_train.reshape(-1, 1)).ravel()
                     y_pred = target_transformer.inverse_transform(y_pred.reshape(-1, 1)).ravel()
 
                 if is_classification:
@@ -749,7 +763,10 @@ def handle(task: A2ATask, log_callback=None):
                     except Exception:
                         pass
                     auc_str = f", AUC={auc:.4f}" if auc is not None else ""
-                    log(f"[MODEL]   {name}: Acc={test_score:.4f}, F1={f1:.4f}{auc_str}, CV={cv_mean:.4f}")
+                    train_acc = accuracy_score(y_train_use, y_pred_train)
+                    overfit_gap = train_acc - test_score
+                    overfit_warning = " \u26a0 OVERFIT" if overfit_gap > 0.1 else ""
+                    log(f"[MODEL]   {name}: Acc={test_score:.4f}, F1={f1:.4f}{auc_str}, CV={cv_mean:.4f}, train={train_acc:.4f}{overfit_warning}")
                     results[name] = {
                         "score": float(test_score),
                         "accuracy": float(test_score),
@@ -763,16 +780,20 @@ def handle(task: A2ATask, log_callback=None):
                     }
                 else:
                     test_score = r2_score(y_test, y_pred)
+                    train_r2 = r2_score(y_train, y_pred_train)
+                    overfit_gap = train_r2 - test_score
+                    overfit_warning = " OVERFIT" if overfit_gap > 0.1 else ""
                     n = len(y_test)
                     p = X_test_use.shape[1]
                     adj_r2 = 1 - (1 - test_score) * (n - 1) / (n - p - 1) if n > p + 1 else test_score
                     mse = mean_squared_error(y_test, y_pred)
                     rmse = mse ** 0.5
                     mae = mean_absolute_error(y_test, y_pred)
-                    log(f"[MODEL]   {name}: R²={test_score:.4f}, RMSE={rmse:.4f}, CV={cv_mean:.4f}")
+                    log(f"[MODEL]   {name}: R2={test_score:.4f}, RMSE={rmse:.4f}, CV={cv_mean:.4f}, train={train_r2:.4f}{overfit_warning}")
                     results[name] = {
                         "score": float(test_score),
                         "r2": float(test_score),
+                        "train_r2": float(train_r2),
                         "adjusted_r2": float(adj_r2),
                         "mse": float(mse),
                         "rmse": float(rmse),
@@ -795,7 +816,7 @@ def handle(task: A2ATask, log_callback=None):
 
         # --- Always run Optuna tuning (not gated behind 80%) ---
         tuned_result = None
-        if SMART_ML_AVAILABLE:
+        if OPTUNA_AVAILABLE:
             log(f"[MODEL] Running Optuna hyperparameter tuning...")
             tuned_result = hyperparameter_tuning(X_train_use, y_train_use, problem_type, log_callback)
 
@@ -828,9 +849,18 @@ def handle(task: A2ATask, log_callback=None):
                     best_model_obj = tuned_result['model']
 
         # --- Create ensemble from TRAINED model objects ---
-        ensemble = create_ensemble(results, X_train_use, y_train_use, problem_type, log_callback)
+        ensemble_members = []
+        ensemble, ensemble_members = create_ensemble(results, X_train_use, y_train_use, problem_type, log_callback)
 
         if ensemble:
+            # Keep selection metric consistent with base models (CV-based).
+            try:
+                scoring = 'accuracy' if is_classification else 'r2'
+                ensemble_cv_scores = cross_val_score(ensemble, X_train_use, y_train_use, cv=cv_strategy, scoring=scoring)
+                ensemble_cv = float(ensemble_cv_scores.mean())
+            except Exception:
+                ensemble_cv = -np.inf
+
             y_pred_ensemble = ensemble.predict(X_test_use)
 
             # Inverse transform if target was transformed
@@ -862,6 +892,7 @@ def handle(task: A2ATask, log_callback=None):
                     "recall": float(e_rec),
                     "f1_score": float(e_f1),
                     "auc_roc": float(e_auc) if e_auc is not None else None,
+                    "cv_score": None if ensemble_cv == -np.inf else float(ensemble_cv),
                     "metric": metric_name
                 }
             else:
@@ -880,13 +911,15 @@ def handle(task: A2ATask, log_callback=None):
                     "mse": float(mse),
                     "rmse": float(rmse),
                     "mae": float(mae),
+                    "cv_score": None if ensemble_cv == -np.inf else float(ensemble_cv),
                     "metric": metric_name
                 }
 
-            # Use CV-equivalent check for ensemble (it was fit on train so we trust test score)
-            if ensemble_score > results.get(best_model_name, {}).get("score", 0):
+            # Use the same selection criterion as base models: CV score.
+            if ensemble_cv > best_cv_score:
                 log(f"[MODEL] ✓ Ensemble beats best! Using ensemble.")
                 best_model_name = 'ensemble'
+                best_cv_score = ensemble_cv
 
         # Get the final best test score for reporting
         best_score = results.get(best_model_name, {}).get("score", 0)
@@ -894,11 +927,11 @@ def handle(task: A2ATask, log_callback=None):
 
         # --- SHAP Feature Importance (using SCALED test data to match training) ---
         feature_importance = None
-        if SMART_ML_AVAILABLE:
+        if SHAP_AVAILABLE:
             shap_model = best_model_obj
             if best_model_name == 'ensemble':
                 # SHAP needs a tree-based model — find the best one by CV score
-                tree_model_names = {'random_forest', 'xgboost', 'gradient_boosting',
+                tree_model_names = {'random_forest', 'xgboost', 'gradient_boosting', 'lightgbm',
                                     'decision_tree', 'random_forest_tuned', 'xgboost_tuned',
                                     'gradient_boosting_tuned'}
                 shap_model = None
@@ -940,6 +973,7 @@ def handle(task: A2ATask, log_callback=None):
                 "best_model": best_model_name,
                 "best_score": float(best_score),
                 "best_params": final_best_params,
+                "ensemble_members": ensemble_members if best_model_name == 'ensemble' else [],
                 "problem_type": problem_type,
                 "metric": metric_name,
                 "used_tuning": tuned_result is not None,
@@ -954,3 +988,6 @@ def handle(task: A2ATask, log_callback=None):
         import traceback
         traceback.print_exc()
         raise
+
+
+

@@ -101,9 +101,6 @@ def run_workflow():
     tracer.record("analysis", analysis["output"])
 
     # Step 2: Generate Insights (AI) — uses GEMINI_API_KEY_1
-    print("\n⏳ Waiting 25s for rate limit cooldown...")
-    time.sleep(25)
-    requests.post(f"{SERVICE_URL}/swap-key/1")
     print("\n💡 Step 2/7: Generating insights (AI)...")
     insights = send_task_streaming(
         f"{SERVICE_URL}/a2a/insight",
@@ -116,9 +113,6 @@ def run_workflow():
     tracer.record("insights_1", insights["output"])
 
     # Step 3: Preprocessing Strategy — uses GEMINI_API_KEY_2
-    print("\n⏳ Waiting 25s for rate limit cooldown...")
-    time.sleep(25)
-    requests.post(f"{SERVICE_URL}/swap-key/2")
     print("\n🧹 Step 3/7: Determining preprocessing strategy (AI)...")
     prep_strategy = send_task_streaming(
         f"{SERVICE_URL}/a2a/preprocessing",
@@ -131,8 +125,6 @@ def run_workflow():
     tracer.record("preprocessing", prep_strategy["output"])
 
     # Step 4: Feature Engineering — uses GEMINI_API_KEY_2 (same key)
-    print("\n⏳ Waiting 25s for rate limit cooldown...")
-    time.sleep(25)
     print("\n🔧 Step 4/7: Feature engineering strategy (AI)...")
     feat_strategy = send_task_streaming(
         f"{SERVICE_URL}/a2a/feature",
@@ -149,9 +141,9 @@ def run_workflow():
 
     # Step 5: Model Training
     print("\n🤖 Step 5/7: Training models...")
-    print("  ⏳ Smart ML active: Tuning, SMOTE, CV & SHAP may take a few minutes...")
+    print("  ⏳ Smart ML active: Tuning, class-weighting, CV & SHAP may take a few minutes...")
     
-    # Train models (single pass — internal CV, SMOTE, and Optuna handle optimization)
+    # Train models (single pass — internal CV, class weighting, and Optuna handle optimization)
     models = send_task_streaming(
         f"{SERVICE_URL}/a2a/model",
         A2ATask.create(
@@ -187,10 +179,6 @@ def run_workflow():
     tracer.record("models", models["output"])
     tracer.record("evaluation", evaluation["output"])
 
-    # Swap to GEMINI_API_KEY_3 for remaining LLM calls
-    print("\n⏳ Waiting 25s for rate limit cooldown...")
-    time.sleep(25)
-    requests.post(f"{SERVICE_URL}/swap-key/3")
 
     # Step 6: Generate insights — uses GEMINI_API_KEY_3
     print("\n💡 Step 6/7: Generating insights (AI)...")
@@ -208,8 +196,6 @@ def run_workflow():
     tracer.record("insights_2", insights["output"])
 
     # Step 7: Generate Project
-    print("\n⏳ Waiting 25s for rate limit cooldown...")
-    time.sleep(25)
     print("\n📝 Step 7/7: Generating project code (AI)...")
     project = send_task_streaming(
         f"{SERVICE_URL}/a2a/project",
@@ -225,8 +211,8 @@ def run_workflow():
                     "model": models["output"]["best_model"],
                     "score": models["output"]["best_score"],
                     "params": models["output"].get("best_params", {}),
+                    "ensemble_members": models["output"].get("ensemble_members", []),
                     "problem_type": models["output"]["problem_type"],
-                    "used_balancing": models["output"].get("used_balancing", False),
                     "used_scaling": models["output"].get("used_scaling", False),
                     "target_transform": models["output"].get("target_transform", False)
                 }

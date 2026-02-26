@@ -6,6 +6,7 @@ Supports both local file paths and URLs.
 
 import os
 import pandas as pd
+from core.data_utils import load_csv_robust
 
 
 def is_url(path: str) -> bool:
@@ -19,7 +20,7 @@ def load_csv(path_or_url: str) -> pd.DataFrame:
     Pandas read_csv supports both automatically.
     """
     try:
-        df = pd.read_csv(path_or_url)
+        df = load_csv_robust(path_or_url)
         return df
     except Exception as e:
         raise ValueError(f"Failed to load CSV: {e}")
