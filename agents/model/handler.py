@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import re
 from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
 from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge, Lasso, ElasticNet
 from sklearn.ensemble import (RandomForestRegressor, RandomForestClassifier,
@@ -52,10 +53,6 @@ except ImportError:
     SHAP_AVAILABLE = False
     print("[MODEL] Warning: shap not installed. SHAP analysis disabled.")
 
-
-
-
-
 # =============================================================================
 # PREPROCESSING — fits on training data only, transforms both train & test
 # =============================================================================
@@ -73,8 +70,6 @@ def preprocess_data(df, prep_strategy, feat_strategy, target_col, log_callback=N
         if log_callback:
             log_callback(msg)
 
-    # Defensive normalization in case this helper is called standalone.
-    df = normalize_missing_markers(df)
     log(f"[MODEL] Separating features and target...")
 
     X = df.drop(target_col, axis=1)
@@ -100,7 +95,7 @@ def fit_preprocess(X_train, y_train, prep_strategy, feat_strategy, target_col, l
 
     log(f"[MODEL] Fitting preprocessing on training data...")
 
-    X = normalize_missing_markers(X_train.copy())
+    X = X_train.copy()
     original_columns = X.columns.tolist()
 
     # Parse strategies
@@ -165,7 +160,7 @@ def transform_preprocess(X_test, state, log_callback=None):
     
     Logic is delegated to preprocessing and feature agent transform functions.
     """
-    X = normalize_missing_markers(X_test.copy())
+    X = X_test.copy()
 
     # Apply all transforms using train-fitted state
     X = transform_null_handling(X, state, log_callback)
@@ -645,7 +640,7 @@ def handle(task: A2ATask, log_callback=None):
 
         # FINAL SAFETY NET: Strip column names and force purely float64 numpy matrices 
         # before passing them to algorithms to prevent XGBoost Null/missing string crashes
-        import re
+        
         clean_cols = [re.sub(r'[^\w\s-]', '', col).strip().replace(' ', '_') for col in X_train.columns]
         X_train_s = pd.DataFrame(X_train_s, columns=clean_cols, index=X_train.index).astype(float)
         X_test_s = pd.DataFrame(X_test_s, columns=clean_cols, index=X_test.index).astype(float)

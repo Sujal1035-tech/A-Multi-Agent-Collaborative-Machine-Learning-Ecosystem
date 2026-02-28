@@ -10,8 +10,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from a2a.client import send_task, send_task_streaming
 from a2a.schemas import A2ATask
-from core.hitl import ask_permission
-from core.file_writer import write_project
+from core.file_writer import ask_permission, write_project
 from core.user_input import get_user_input
 from config import SERVICE_URL, SERVICE_PORT, MAX_OPTIMIZATION_ITERATIONS, TARGET_ACCURACY
 from core.trace_logger import PipelineTracer
