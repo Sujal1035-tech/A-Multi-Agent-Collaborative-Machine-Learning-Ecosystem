@@ -11,7 +11,19 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 import warnings
+import joblib
 warnings.filterwarnings('ignore')
+
+MISSING_TOKENS = {'', 'na', 'n/a', 'null', 'none', 'nan', '?', 'missing'}
+
+def normalize_missing_markers(df):
+    text_cols = df.select_dtypes(include=['object', 'string', 'category']).columns
+    for col in text_cols:
+        _norm = df[col].astype('string').str.strip().str.lower()
+        _mask = _norm.isin(MISSING_TOKENS)
+        if _mask.any():
+            df.loc[_mask, col] = pd.NA
+    return df
 
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import StratifiedKFold, cross_val_score
@@ -28,12 +40,14 @@ from sklearn.ensemble import RandomForestClassifier
 os.makedirs('stats', exist_ok=True)
 os.makedirs('plots', exist_ok=True)
 os.makedirs('reports', exist_ok=True)
+os.makedirs('models', exist_ok=True)
 
 # ============================================
 # 2. LOAD DATA
 # ============================================
 try:
     data = pd.read_csv('data.csv')
+    data = normalize_missing_markers(data)
     print(f'Data loaded. Shape: {data.shape}')
 except Exception as e:
     print(f'Error loading data: {e}')
@@ -68,52 +82,12 @@ print(f'Train: {X_train.shape}, Test: {X_test.shape}')
 
 # --- Null handling ---
 if 'Bare.nuclei' in X_train.columns and X_train['Bare.nuclei'].dtype in ['int64', 'float64']:
-    try:
-        from sklearn.impute import KNNImputer
-        _imputer = KNNImputer(n_neighbors=5)
-        X_train[['Bare.nuclei']] = _imputer.fit_transform(X_train[['Bare.nuclei']])
-        X_test[['Bare.nuclei']] = _imputer.transform(X_test[['Bare.nuclei']])
-    except ImportError:
-        _fill = X_train['Bare.nuclei'].median()
-        X_train['Bare.nuclei'] = X_train['Bare.nuclei'].fillna(_fill)
-        X_test['Bare.nuclei'] = X_test['Bare.nuclei'].fillna(_fill)
-if 'Bl.cromatin' in X_train.columns and X_train['Bl.cromatin'].dtype in ['int64', 'float64']:
-    try:
-        from sklearn.impute import KNNImputer
-        _imputer = KNNImputer(n_neighbors=5)
-        X_train[['Bl.cromatin']] = _imputer.fit_transform(X_train[['Bl.cromatin']])
-        X_test[['Bl.cromatin']] = _imputer.transform(X_test[['Bl.cromatin']])
-    except ImportError:
-        _fill = X_train['Bl.cromatin'].median()
-        X_train['Bl.cromatin'] = X_train['Bl.cromatin'].fillna(_fill)
-        X_test['Bl.cromatin'] = X_test['Bl.cromatin'].fillna(_fill)
-if 'Normal.nucleoli' in X_train.columns and X_train['Normal.nucleoli'].dtype in ['int64', 'float64']:
-    try:
-        from sklearn.impute import KNNImputer
-        _imputer = KNNImputer(n_neighbors=5)
-        X_train[['Normal.nucleoli']] = _imputer.fit_transform(X_train[['Normal.nucleoli']])
-        X_test[['Normal.nucleoli']] = _imputer.transform(X_test[['Normal.nucleoli']])
-    except ImportError:
-        _fill = X_train['Normal.nucleoli'].median()
-        X_train['Normal.nucleoli'] = X_train['Normal.nucleoli'].fillna(_fill)
-        X_test['Normal.nucleoli'] = X_test['Normal.nucleoli'].fillna(_fill)
-if 'Mitoses' in X_train.columns and X_train['Mitoses'].dtype in ['int64', 'float64']:
-    try:
-        from sklearn.impute import KNNImputer
-        _imputer = KNNImputer(n_neighbors=5)
-        X_train[['Mitoses']] = _imputer.fit_transform(X_train[['Mitoses']])
-        X_test[['Mitoses']] = _imputer.transform(X_test[['Mitoses']])
-    except ImportError:
-        _fill = X_train['Mitoses'].median()
-        X_train['Mitoses'] = X_train['Mitoses'].fillna(_fill)
-        X_test['Mitoses'] = X_test['Mitoses'].fillna(_fill)
-if 'Class' in X_train.columns:
-    _fill = X_train['Class'].mode()[0] if len(X_train['Class'].mode()) > 0 else 'Unknown'
-    X_train['Class'] = X_train['Class'].fillna(_fill)
-    X_test['Class'] = X_test['Class'].fillna(_fill)
+    _fill = X_train['Bare.nuclei'].median()  # Computed from train only
+    X_train['Bare.nuclei'] = X_train['Bare.nuclei'].fillna(_fill)
+    X_test['Bare.nuclei'] = X_test['Bare.nuclei'].fillna(_fill)
 
 # --- Outlier handling (IQR bounds from train only) ---
-for col in ['Marg.adhesion', 'Epith.c.size', 'Bare.nuclei', 'Bl.cromatin', 'Normal.nucleoli', 'Mitoses']:
+for col in ['Id', 'Marg.adhesion', 'Epith.c.size', 'Bl.cromatin', 'Normal.nucleoli', 'Mitoses']:
     if col in X_train.columns and X_train[col].dtype in ['int64', 'float64']:
         Q1 = X_train[col].quantile(0.25)
         Q3 = X_train[col].quantile(0.75)
@@ -152,11 +126,13 @@ scaler = StandardScaler()
 X_train = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
 X_test = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns)
 
+# Class imbalance policy: no SMOTE; use class_weight='balanced' in supported models.
+
 # ============================================
 # 7. MODEL TRAINING — random_forest_tuned
 # ============================================
 best_name = 'random_forest_tuned'
-model = RandomForestClassifier(n_estimators=149, max_depth=21, min_samples_split=8, min_samples_leaf=2, random_state=42)
+model = RandomForestClassifier(n_estimators=427, max_depth=17, min_samples_split=8, min_samples_leaf=1, random_state=42, class_weight='balanced')
 
 # Cross-validation (same as pipeline)
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
@@ -167,6 +143,10 @@ print(f'CV Mean: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})')
 # Train and predict
 model.fit(X_train, y_train)
 y_pred = model.predict(X_test)
+
+# Save model and artifacts for deployment
+joblib.dump(model, 'models/best_random_forest_tuned_model.pkl')
+joblib.dump(scaler, 'models/scaler.pkl')
 
 # ============================================
 # 8. EVALUATION

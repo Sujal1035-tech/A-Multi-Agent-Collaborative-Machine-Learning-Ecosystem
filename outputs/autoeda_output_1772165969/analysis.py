@@ -1,7 +1,7 @@
 """
 AutoEDA Generated Analysis
 This code reproduces the exact pipeline that the agents performed.
-Best Model: ensemble
+Best Model: lightgbm_tuned
 Problem Type: regression
 """
 
@@ -11,17 +11,27 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 import warnings
+import joblib
 warnings.filterwarnings('ignore')
+
+MISSING_TOKENS = {'', 'na', 'n/a', 'null', 'none', 'nan', '?', 'missing'}
+
+def normalize_missing_markers(df):
+    text_cols = df.select_dtypes(include=['object', 'string', 'category']).columns
+    for col in text_cols:
+        _norm = df[col].astype('string').str.strip().str.lower()
+        _mask = _norm.isin(MISSING_TOKENS)
+        if _mask.any():
+            df.loc[_mask, col] = pd.NA
+    return df
 
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.preprocessing import PowerTransformer
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 
 # Model Import
-from sklearn.ensemble import VotingRegressor, RandomForestRegressor, GradientBoostingRegressor
-from xgboost import XGBRegressor
+from lightgbm import LGBMClassifier, LGBMRegressor
 
 # ============================================
 # 1. SETUP
@@ -29,12 +39,14 @@ from xgboost import XGBRegressor
 os.makedirs('stats', exist_ok=True)
 os.makedirs('plots', exist_ok=True)
 os.makedirs('reports', exist_ok=True)
+os.makedirs('models', exist_ok=True)
 
 # ============================================
 # 2. LOAD DATA
 # ============================================
 try:
     data = pd.read_csv('data.csv')
+    data = normalize_missing_markers(data)
     print(f'Data loaded. Shape: {data.shape}')
 except Exception as e:
     print(f'Error loading data: {e}')
@@ -43,7 +55,7 @@ except Exception as e:
 # ============================================
 # 3. SEPARATE FEATURES AND TARGET
 # ============================================
-TARGET_COL = 'price'
+TARGET_COL = 'mpg'
 X = data.drop(TARGET_COL, axis=1)
 y = data[TARGET_COL]
 
@@ -67,14 +79,43 @@ print(f'Train: {X_train.shape}, Test: {X_test.shape}')
 #    This prevents data leakage from test set
 # ============================================
 
+# --- Null handling ---
+if 'horsepower' in X_train.columns and X_train['horsepower'].dtype in ['int64', 'float64']:
+    _fill = X_train['horsepower'].median()  # Computed from train only
+    X_train['horsepower'] = X_train['horsepower'].fillna(_fill)
+    X_test['horsepower'] = X_test['horsepower'].fillna(_fill)
+
+# --- Outlier handling (IQR bounds from train only) ---
+for col in ['horsepower', 'acceleration']:
+    if col in X_train.columns and X_train[col].dtype in ['int64', 'float64']:
+        Q1 = X_train[col].quantile(0.25)
+        Q3 = X_train[col].quantile(0.75)
+        IQR = Q3 - Q1
+        lower = Q1 - 1.5 * IQR
+        upper = Q3 + 1.5 * IQR
+        X_train[col] = X_train[col].clip(lower=lower, upper=upper)
+        X_test[col] = X_test[col].clip(lower=lower, upper=upper)  # Same bounds from train
+
 # --- Encoding ---
-# Label Encoding (fit on train, transform both)
-_label_cols = [c for c in ['cut', 'color', 'clarity'] if c in X_train.columns and X_train[c].dtype == 'object']
-for col in _label_cols:
-    _le = LabelEncoder()
-    X_train[col] = _le.fit_transform(X_train[col].astype(str))
-    X_test[col] = X_test[col].map({v: i for i, v in enumerate(_le.classes_)})
-    X_test[col] = X_test[col].fillna(-1).astype(int)
+# One-Hot Encoding (aligned to training categories)
+_onehot_cols = [c for c in ['cylinders', 'origin'] if c in X_train.columns and X_train[c].dtype == 'object']
+for col in _onehot_cols:
+    _train_dummies = pd.get_dummies(X_train[col], prefix=col, drop_first=True)
+    _test_dummies = pd.get_dummies(X_test[col], prefix=col, drop_first=True)
+    # Align test to train columns
+    for c in _train_dummies.columns:
+        if c not in _test_dummies.columns:
+            _test_dummies[c] = 0
+    _test_dummies = _test_dummies[[c for c in _train_dummies.columns if c in _test_dummies.columns]]
+    X_train = pd.concat([X_train.drop(col, axis=1), _train_dummies], axis=1)
+    X_test = pd.concat([X_test.drop(col, axis=1), _test_dummies], axis=1)
+
+# Frequency Encoding (frequencies from train only)
+_freq_cols = [c for c in ['name'] if c in X_train.columns and X_train[c].dtype == 'object']
+for col in _freq_cols:
+    _freq = X_train[col].value_counts(normalize=True).to_dict()
+    X_train[col] = X_train[col].map(_freq).fillna(0)
+    X_test[col] = X_test[col].map(_freq).fillna(0)  # Same frequencies from train
 
 # Auto-encode remaining categorical columns
 for col in X_train.select_dtypes(include=['object', 'category']).columns:
@@ -104,21 +145,11 @@ scaler = StandardScaler()
 X_train = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
 X_test = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns)
 
-# Target Transform (Yeo-Johnson for skewed regression target)
-pt = PowerTransformer(method='yeo-johnson')
-y_train = pt.fit_transform(y_train.values.reshape(-1, 1)).ravel()
-
 # ============================================
-# 7. MODEL TRAINING — ensemble
+# 7. MODEL TRAINING — lightgbm_tuned
 # ============================================
-best_name = 'ensemble'
-model = VotingRegressor(
-    estimators=[
-        ('random_forest', RandomForestRegressor(n_estimators=200, random_state=42)),
-        ('gradient_boosting', GradientBoostingRegressor(n_estimators=200, learning_rate=0.1, random_state=42)),
-        ('xgboost', XGBRegressor(n_estimators=200, learning_rate=0.1, random_state=42)),
-    ]
-)
+best_name = 'lightgbm_tuned'
+model = LGBMRegressor(n_estimators=202, learning_rate=0.05269284907890199, max_depth=7, subsample=0.7740385332157751, colsample_bytree=0.922980191220747, random_state=42, verbose=-1)
 
 # Cross-validation (same as pipeline)
 cv_scores = cross_val_score(model, X_train, y_train, cv=5, scoring='r2')
@@ -129,8 +160,9 @@ print(f'CV Mean: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})')
 model.fit(X_train, y_train)
 y_pred = model.predict(X_test)
 
-# Inverse transform predictions
-y_pred = pt.inverse_transform(y_pred.reshape(-1, 1)).ravel()
+# Save model and artifacts for deployment
+joblib.dump(model, 'models/best_lightgbm_tuned_model.pkl')
+joblib.dump(scaler, 'models/scaler.pkl')
 
 # ============================================
 # 8. EVALUATION
@@ -146,7 +178,7 @@ print(f'MAE:      {mae:.4f}')
 
 # Save metrics
 with open('stats/model_performance.txt', 'w') as f:
-    f.write(f'Best Model (ensemble)\n')
+    f.write(f'Best Model (lightgbm_tuned)\n')
     f.write(f'R2 Score: {r2:.4f}\n')
     f.write(f'MSE: {mse:.4f}\n')
     f.write(f'RMSE: {rmse:.4f}\n')

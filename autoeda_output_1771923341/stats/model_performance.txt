@@ -1,5 +1,0 @@
-Best Model (random_forest_tuned): 0.9714
-Precision: 0.9400
-Recall: 0.9792
-F1 Score: 0.9592
-CV Mean: 0.9750

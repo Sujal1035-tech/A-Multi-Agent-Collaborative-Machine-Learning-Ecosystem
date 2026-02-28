@@ -1,0 +1,6 @@
+Best Model (lightgbm_tuned)
+R2 Score: 0.9052
+MSE: 5.0994
+RMSE: 2.2582
+MAE: 1.6980
+CV Mean: 0.8554
