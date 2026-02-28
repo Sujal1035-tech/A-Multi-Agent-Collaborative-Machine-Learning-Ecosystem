@@ -4,6 +4,7 @@ Common data-cleaning functions used by multiple agents — extracted to avoid du
 """
 
 import pandas as pd
+import numpy as np
 
 MISSING_TOKENS = {"", "na", "n/a", "null", "none", "nan", "?", "missing"}
 
@@ -16,7 +17,7 @@ def normalize_missing_markers(df: pd.DataFrame) -> pd.DataFrame:
         normalized = df[col].astype("string").str.strip()
         mask = normalized.str.lower().isin(MISSING_TOKENS)
         if mask.any():
-            df.loc[mask, col] = pd.NA
+            df.loc[mask, col] = np.nan
     return df
 
 def load_csv_robust(filepath: str, **kwargs) -> pd.DataFrame:
@@ -25,7 +26,8 @@ def load_csv_robust(filepath: str, **kwargs) -> pd.DataFrame:
     Falls back to python engine and skips bad lines if standard parsing fails.
     """
     import os
-    if not os.path.exists(filepath):
+    is_url = filepath.lower().startswith(('http://', 'https://'))
+    if not is_url and not os.path.exists(filepath):
          raise FileNotFoundError(f"File not found: {filepath}")
 
     encodings_to_try = ['utf-8', 'latin1', 'cp1252', 'utf-16']

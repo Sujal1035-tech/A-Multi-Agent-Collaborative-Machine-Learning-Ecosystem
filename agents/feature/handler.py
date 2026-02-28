@@ -348,8 +348,18 @@ Rules:
         crew = Crew(agents=[engineer], tasks=[t])
         result = crew.kickoff()
 
-        # Parse LLM strategy
+        # Phase 1: Robustly extract JSON from messy LLM output (strips markdown, etc.)
         strategy = parse_json_from_llm(str(result))
+        
+        # Flatten nested 'feature_strategy' common LLM hallucination
+        if "feature_strategy" in strategy and "encoding_strategy" in strategy["feature_strategy"]:
+            strategy = strategy["feature_strategy"]
+            
+        # Ensure default keys to prevent KeyError down pipeline
+        strategy.setdefault("datetime_strategy", {"columns": [], "reason": ""})
+        strategy.setdefault("text_strategy", {"columns": [], "reason": ""})
+        strategy.setdefault("encoding_strategy", {"onehot": [], "label": [], "target": [], "reason": ""})
+        strategy.setdefault("features_to_drop", [])
 
         # POST-PROCESSING: Remove numeric columns that the LLM may have
         # mistakenly included in encoding lists.

@@ -75,6 +75,7 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
         code += "import seaborn as sns\n"
         code += "import os\n"
         code += "import warnings\n"
+        code += "import joblib\n"
         code += "warnings.filterwarnings('ignore')\n\n"
         code += "MISSING_TOKENS = {'', 'na', 'n/a', 'null', 'none', 'nan', '?', 'missing'}\n\n"
         code += "def normalize_missing_markers(df):\n"
@@ -83,7 +84,7 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
         code += "        _norm = df[col].astype('string').str.strip().str.lower()\n"
         code += "        _mask = _norm.isin(MISSING_TOKENS)\n"
         code += "        if _mask.any():\n"
-        code += "            df.loc[_mask, col] = pd.NA\n"
+        code += "            df.loc[_mask, col] = np.nan\n"
         code += "    return df\n\n"
 
         code += "from sklearn.model_selection import train_test_split\n"
@@ -115,6 +116,7 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
         code += "os.makedirs('stats', exist_ok=True)\n"
         code += "os.makedirs('plots', exist_ok=True)\n"
         code += "os.makedirs('reports', exist_ok=True)\n"
+        code += "os.makedirs('models', exist_ok=True)\n"
 
         # --- Load Data ---
         code += "\n# ============================================\n"
@@ -249,7 +251,7 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
             code += "    _le = LabelEncoder()\n"
             code += "    X_train[col] = _le.fit_transform(X_train[col].astype(str))\n"
             code += "    X_test[col] = X_test[col].map({v: i for i, v in enumerate(_le.classes_)})\n"
-            code += "    X_test[col] = X_test[col].fillna(-1).astype(int)\n\n"
+            code += "    X_test[col] = pd.to_numeric(X_test[col], errors='coerce').fillna(-1).astype(int)\n\n"
 
         target_enc_cols = encoding_strategy.get('target', [])
         if target_enc_cols:
@@ -260,22 +262,29 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
             code += "    X_train[col] = X_train[col].map(_freq).fillna(0)\n"
             code += "    X_test[col] = X_test[col].map(_freq).fillna(0)  # Same frequencies from train\n\n"
 
-        # Fallback encoding
+        # Auto-encode remaining categorical columns
         code += "# Auto-encode remaining categorical columns\n"
-        code += "for col in X_train.select_dtypes(include=['object', 'category']).columns:\n"
+        code += "for col in X_train.select_dtypes(include=['object', 'category', 'string']).columns:\n"
         code += "    _le = LabelEncoder()\n"
         code += "    X_train[col] = _le.fit_transform(X_train[col].astype(str))\n"
         code += "    _mapping = {v: i for i, v in enumerate(_le.classes_)}\n"
-        code += "    X_test[col] = X_test[col].map(_mapping).fillna(-1).astype(int)\n"
+        code += "    X_test[col] = X_test[col].map(_mapping)\n"
+        code += "    X_test[col] = pd.to_numeric(X_test[col], errors='coerce').fillna(-1).astype(int)\n\n"
 
-        # Fallback NaN fill
-        code += "\n# Fill any remaining NaN (using train medians)\n"
+        # Final Safety Net: Force all features to be pure numeric to prevent XGBoost type crashes
+        code += "# Final Safety Net: Force all features to be pure numeric to prevent XGBoost type crashes\n"
+        code += "for col in X_train.columns:\n"
+        code += "    X_train[col] = pd.to_numeric(X_train[col], errors='coerce')\n"
+        code += "    X_test[col] = pd.to_numeric(X_test[col], errors='coerce')\n\n"
+
+        # Fill any remaining NaN (using train medians)
+        code += "# Fill any remaining NaN (using train medians)\n"
         code += "if X_train.isna().sum().sum() > 0:\n"
         code += "    _medians = X_train.median(numeric_only=True)\n"
         code += "    X_train = X_train.fillna(_medians)\n"
-        code += "    X_test = X_test.fillna(_medians)\n"
+        code += "    X_test = X_test.fillna(_medians)\n\n"
 
-        # Align test columns to train
+        # Align test columns to match training
         code += "\n# Align test columns to match training\n"
         code += "for col in X_train.columns:\n"
         code += "    if col not in X_test.columns:\n"
@@ -326,6 +335,11 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
         code += "# Train and predict\n"
         code += "model.fit(X_train, y_train)\n"
         code += "y_pred = model.predict(X_test)\n"
+        
+        code += "\n# Save model and artifacts for deployment\n"
+        code += f"joblib.dump(model, 'models/best_{best_name}_model.pkl')\n"
+        if used_scaling:
+            code += "joblib.dump(scaler, 'models/scaler.pkl')\n"
 
         if target_transform:
             code += "\n# Inverse transform predictions\n"
@@ -491,6 +505,7 @@ python analysis.py
 - Parameters: `{best_params}`
 
 ### Output Files
+- `models/` — Saved model and scaling artifacts (.pkl)
 - `stats/model_performance.txt` — Score summary
 - `reports/metrics.txt` — Detailed classification/regression report
 - `plots/correlation_heatmap.png` — Feature correlations
@@ -593,7 +608,7 @@ def _get_model_import(best_name, problem_type, ensemble_members=None):
 
 def _get_model_instantiation(best_name, best_params, problem_type, ensemble_members=None):
     """Return the correct model instantiation code with exact parameters."""
-    params = dict(best_params)
+    params = {k: v for k, v in best_params.items() if v is not None}
     param_str = ", ".join(f"{k}={repr(v)}" for k, v in params.items())
     ensemble_members = ensemble_members or []
 
@@ -603,7 +618,7 @@ def _get_model_instantiation(best_name, best_params, problem_type, ensemble_memb
         for member in ensemble_members:
             name = member.get("name")
             cls_name = member.get("class_name")
-            mparams = dict(member.get("params", {}))
+            mparams = {k: v for k, v in member.get("params", {}).items() if v is not None}
             if not name or not cls_name:
                 continue
             if cls_name == "XGBClassifier" and "eval_metric" not in mparams:

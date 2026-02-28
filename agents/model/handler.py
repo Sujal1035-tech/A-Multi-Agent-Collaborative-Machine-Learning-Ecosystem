@@ -638,12 +638,20 @@ def handle(task: A2ATask, log_callback=None):
         # Fit-transform train
         X_train_r = robust_scaler.fit_transform(X_train)
         X_train_s = std_scaler.fit_transform(X_train_r)
-        X_train_scaled = pd.DataFrame(X_train_s, columns=X_train.columns)
         
         # Transform test
         X_test_r = robust_scaler.transform(X_test)
         X_test_s = std_scaler.transform(X_test_r)
-        X_test_scaled = pd.DataFrame(X_test_s, columns=X_test.columns)
+
+        # FINAL SAFETY NET: Strip column names and force purely float64 numpy matrices 
+        # before passing them to algorithms to prevent XGBoost Null/missing string crashes
+        import re
+        clean_cols = [re.sub(r'[^\w\s-]', '', col).strip().replace(' ', '_') for col in X_train.columns]
+        X_train_s = pd.DataFrame(X_train_s, columns=clean_cols, index=X_train.index).astype(float)
+        X_test_s = pd.DataFrame(X_test_s, columns=clean_cols, index=X_test.index).astype(float)
+
+        X_train_scaled = X_train_s
+        X_test_scaled = X_test_s
         
         log(f"[MODEL] \u2713 Applied RobustScaler + StandardScaler pipeline")
 
@@ -707,7 +715,7 @@ def handle(task: A2ATask, log_callback=None):
                 models["lightgbm"] = LGBMRegressor(n_estimators=200, learning_rate=0.1, random_state=42, verbose=-1)
             metric_name = "r2_score"
 
-        log(f"[MODEL] Training {len(models)} base models with cross-validation...")
+        log(f"[MODEL] Training {len(models)} base models concurrently via Joblib...")
 
         # --- Train base models ---
         results = {}
@@ -725,30 +733,26 @@ def handle(task: A2ATask, log_callback=None):
         else:
             cv_strategy = 5
 
-        for i, (name, model) in enumerate(models.items(), 1):
-            log(f"[MODEL] [{i}/{len(models)}] Training {name}...")
+        from joblib import Parallel, delayed
 
+        def train_single_model(name, model):
             try:
-                # Cross-validation on training data
                 scoring = 'accuracy' if is_classification else 'r2'
                 cv_scores = cross_val_score(model, X_train_use, y_train_use, cv=cv_strategy, scoring=scoring)
                 cv_mean = cv_scores.mean()
 
-                # Train on full training set
                 model.fit(X_train_use, y_train_use)
                 
-                # Train score for overfitting diagnostics
                 y_pred_train = model.predict(X_train_use)
                 y_pred = model.predict(X_test_use)
 
-                # Inverse transform predictions for regression
                 if target_transformer is not None and not is_classification:
                     y_pred_train = target_transformer.inverse_transform(y_pred_train.reshape(-1, 1)).ravel()
                     y_pred = target_transformer.inverse_transform(y_pred.reshape(-1, 1)).ravel()
 
                 if is_classification:
                     test_score = accuracy_score(y_test, y_pred)
-                    avg = 'binary' if len(y.unique()) == 2 else 'weighted'
+                    avg = 'binary' if len(np.unique(y_train)) == 2 else 'weighted'
                     prec = precision_score(y_test, y_pred, average=avg, zero_division=0)
                     rec = recall_score(y_test, y_pred, average=avg, zero_division=0)
                     f1 = f1_score(y_test, y_pred, average=avg, zero_division=0)
@@ -756,18 +760,14 @@ def handle(task: A2ATask, log_callback=None):
                     try:
                         if hasattr(model, 'predict_proba'):
                             y_proba = model.predict_proba(X_test_use)
-                            if len(y.unique()) == 2:
+                            if len(np.unique(y_train)) == 2:
                                 auc = roc_auc_score(y_test, y_proba[:, 1])
                             else:
                                 auc = roc_auc_score(y_test, y_proba, multi_class='ovr', average='weighted')
                     except Exception:
                         pass
-                    auc_str = f", AUC={auc:.4f}" if auc is not None else ""
                     train_acc = accuracy_score(y_train_use, y_pred_train)
-                    overfit_gap = train_acc - test_score
-                    overfit_warning = " \u26a0 OVERFIT" if overfit_gap > 0.1 else ""
-                    log(f"[MODEL]   {name}: Acc={test_score:.4f}, F1={f1:.4f}{auc_str}, CV={cv_mean:.4f}, train={train_acc:.4f}{overfit_warning}")
-                    results[name] = {
+                    return name, {
                         "score": float(test_score),
                         "accuracy": float(test_score),
                         "precision": float(prec),
@@ -776,21 +776,19 @@ def handle(task: A2ATask, log_callback=None):
                         "auc_roc": float(auc) if auc is not None else None,
                         "cv_score": float(cv_mean),
                         "metric": metric_name,
-                        "model_obj": model  # Keep reference for ensemble
+                        "model_obj": model,
+                        "train_score": float(train_acc)
                     }
                 else:
                     test_score = r2_score(y_test, y_pred)
                     train_r2 = r2_score(y_train, y_pred_train)
-                    overfit_gap = train_r2 - test_score
-                    overfit_warning = " OVERFIT" if overfit_gap > 0.1 else ""
                     n = len(y_test)
                     p = X_test_use.shape[1]
                     adj_r2 = 1 - (1 - test_score) * (n - 1) / (n - p - 1) if n > p + 1 else test_score
                     mse = mean_squared_error(y_test, y_pred)
                     rmse = mse ** 0.5
                     mae = mean_absolute_error(y_test, y_pred)
-                    log(f"[MODEL]   {name}: R2={test_score:.4f}, RMSE={rmse:.4f}, CV={cv_mean:.4f}, train={train_r2:.4f}{overfit_warning}")
-                    results[name] = {
+                    return name, {
                         "score": float(test_score),
                         "r2": float(test_score),
                         "train_r2": float(train_r2),
@@ -802,15 +800,36 @@ def handle(task: A2ATask, log_callback=None):
                         "metric": metric_name,
                         "model_obj": model
                     }
+            except Exception as e:
+                return name, {"score": 0.0, "cv_score": 0.0, "metric": metric_name, "error": str(e)}
 
-                # Use CV score for model SELECTION (more reliable than single test split)
+        parallel_results = Parallel(n_jobs=-1)(
+            delayed(train_single_model)(name, model) for name, model in models.items()
+        )
+
+        for name, res in parallel_results:
+            results[name] = res
+            if res.get("error"):
+                log(f"[MODEL]   {name}: FAILED — {res['error']}")
+            else:
+                cv_mean = res["cv_score"]
+                test_score = res["score"]
+                if is_classification:
+                    f1 = res["f1_score"]
+                    auc_str = f", AUC={res['auc_roc']:.4f}" if res['auc_roc'] is not None else ""
+                    train_acc = res["train_score"]
+                    overfit_warning = " \u26a0 OVERFIT" if (train_acc - test_score) > 0.1 else ""
+                    log(f"[MODEL]   {name}: Acc={test_score:.4f}, F1={f1:.4f}{auc_str}, CV={cv_mean:.4f}, train={train_acc:.4f}{overfit_warning}")
+                else:
+                    rmse = res["rmse"]
+                    train_r2 = res["train_r2"]
+                    overfit_warning = " OVERFIT" if (train_r2 - test_score) > 0.1 else ""
+                    log(f"[MODEL]   {name}: R2={test_score:.4f}, RMSE={rmse:.4f}, CV={cv_mean:.4f}, train={train_r2:.4f}{overfit_warning}")
+
                 if cv_mean > best_cv_score:
                     best_cv_score = cv_mean
                     best_model_name = name
-                    best_model_obj = model
-            except Exception as e:
-                log(f"[MODEL]   {name}: FAILED — {e}")
-                results[name] = {"score": 0.0, "cv_score": 0.0, "metric": metric_name, "error": str(e)}
+                    best_model_obj = res["model_obj"]
 
         log(f"[MODEL] Best base model: {best_model_name} (CV={best_cv_score:.4f})")
 
@@ -964,11 +983,23 @@ def handle(task: A2ATask, log_callback=None):
         for name, info in results.items():
             clean_results[name] = {k: v for k, v in info.items() if k != "model_obj"}
 
-        return A2AResponse(
-            task_id=task.task_id,
-            sender="model-agent",
-            status="COMPLETED",
-            output={
+        # Clean NaN and Inf values from output payload because they are not JSON compliant
+        def _clean_json_floats(obj):
+            if isinstance(obj, float):
+                if pd.isna(obj) or np.isnan(obj):
+                    return None
+                elif np.isposinf(obj):
+                    return "Infinity"  # or 999999999.0 depending on needs
+                elif np.isneginf(obj):
+                    return "-Infinity"
+                return obj
+            elif isinstance(obj, dict):
+                return {k: _clean_json_floats(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [_clean_json_floats(i) for i in obj]
+            return obj
+
+        cleaned_output = _clean_json_floats({
                 "models": clean_results,
                 "best_model": best_model_name,
                 "best_score": float(best_score),
@@ -981,13 +1012,16 @@ def handle(task: A2ATask, log_callback=None):
                 "used_scaling": True,
                 "target_transform": not is_classification and target_transformer is not None,
                 "feature_importance": feature_importance[:10] if feature_importance else None
-            }
+            })
+
+        return A2AResponse(
+            task_id=task.task_id,
+            sender="model-agent",
+            status="COMPLETED",
+            output=cleaned_output
         )
     except Exception as e:
         log(f"[MODEL] ERROR: {e}")
         import traceback
         traceback.print_exc()
         raise
-
-
-

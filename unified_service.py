@@ -199,49 +199,50 @@ def swap_key(key_id: str):
         "mode": "request-scoped",
         "message": "Global key swapping is disabled; key is selected per request."
     }
-
 # ============================================================================
 # AGENT ENDPOINTS - All import from agents/ folder (NO DUPLICATION!)
 # ============================================================================
+
+from fastapi.concurrency import run_in_threadpool
 
 def no_op_callback(msg: str):
     """Dummy callback for non-streaming requests."""
     logger.debug(msg)
 
 @app.post("/a2a/analysis")
-def analysis_endpoint(task: A2ATask) -> A2AResponse:
+async def analysis_endpoint(task: A2ATask) -> A2AResponse:
     """Analysis - imports from agents/analysis/handler.py"""
-    return _run_with_agent_key("analysis", task, handle_analysis, no_op_callback)
+    return await run_in_threadpool(_run_with_agent_key, "analysis", task, handle_analysis, no_op_callback)
 
 @app.post("/a2a/insight")
-def insight_endpoint(task: A2ATask) -> A2AResponse:
+async def insight_endpoint(task: A2ATask) -> A2AResponse:
     """Insight - imports from agents/insight/handler.py"""
-    return _run_with_agent_key("insight", task, handle_insight_service, no_op_callback)
+    return await run_in_threadpool(_run_with_agent_key, "insight", task, handle_insight_service, no_op_callback)
 
 @app.post("/a2a/project")
-def project_endpoint(task: A2ATask) -> A2AResponse:
+async def project_endpoint(task: A2ATask) -> A2AResponse:
     """Project - imports from agents/project/handler.py"""
-    return _run_with_agent_key("project", task, handle_project, no_op_callback)
+    return await run_in_threadpool(_run_with_agent_key, "project", task, handle_project, no_op_callback)
 
 @app.post("/a2a/preprocessing")
-def preprocessing_endpoint(task: A2ATask) -> A2AResponse:
+async def preprocessing_endpoint(task: A2ATask) -> A2AResponse:
     """Preprocessing - imports from agents/preprocessing/handler.py"""
-    return _run_with_agent_key("preprocessing", task, handle_preprocessing_service, no_op_callback)
+    return await run_in_threadpool(_run_with_agent_key, "preprocessing", task, handle_preprocessing_service, no_op_callback)
 
 @app.post("/a2a/feature")
-def feature_endpoint(task: A2ATask) -> A2AResponse:
+async def feature_endpoint(task: A2ATask) -> A2AResponse:
     """Feature Engineering - imports from agents/feature/handler.py"""
-    return _run_with_agent_key("feature", task, handle_feature_service, no_op_callback)
+    return await run_in_threadpool(_run_with_agent_key, "feature", task, handle_feature_service, no_op_callback)
 
 @app.post("/a2a/model")
-def model_endpoint(task: A2ATask) -> A2AResponse:
+async def model_endpoint(task: A2ATask) -> A2AResponse:
     """Model Training - imports from agents/model/handler.py"""
-    return _run_with_agent_key("model", task, handle_model_service, no_op_callback)
+    return await run_in_threadpool(_run_with_agent_key, "model", task, handle_model_service, no_op_callback)
 
 @app.post("/a2a/evaluation")
-def evaluation_endpoint(task: A2ATask) -> A2AResponse:
+async def evaluation_endpoint(task: A2ATask) -> A2AResponse:
     """Evaluation - imports from agents/evaluation/handler.py"""
-    return _run_with_agent_key("evaluation", task, handle_evaluation_service, no_op_callback)
+    return await run_in_threadpool(_run_with_agent_key, "evaluation", task, handle_evaluation_service, no_op_callback)
 
 # ============================================================================
 # STREAMING ENDPOINTS - Same agents but with real-time SSE output

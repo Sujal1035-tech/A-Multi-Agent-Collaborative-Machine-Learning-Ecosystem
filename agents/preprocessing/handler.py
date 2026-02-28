@@ -270,6 +270,16 @@ Rules:
 
         # Parse LLM strategy
         strategy = parse_json_from_llm(str(result))
+        
+        # Flatten nested 'preprocessing_strategy' common LLM hallucination
+        if "preprocessing_strategy" in strategy and "null_strategy" in strategy["preprocessing_strategy"]:
+            strategy = strategy["preprocessing_strategy"]
+            
+        # Ensure default keys to prevent KeyError down pipeline
+        strategy.setdefault("null_strategy", {})
+        strategy.setdefault("outlier_strategy", {"method": "iqr_capping", "columns": [], "threshold": 1.5, "reason": "default"})
+        strategy.setdefault("scaling_strategy", {"method": "robust", "columns": [], "reason": "default"})
+
         log(f"[PREPROCESSING] LLM Strategy: {json.dumps(strategy, indent=2)[:500]}")
 
         return A2AResponse(

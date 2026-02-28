@@ -16,7 +16,9 @@ from core.user_input import get_user_input
 from config import SERVICE_URL, SERVICE_PORT, MAX_OPTIMIZATION_ITERATIONS, TARGET_ACCURACY
 from core.trace_logger import PipelineTracer
 
-OUT = os.path.join(PROJECT_ROOT, f"autoeda_output_{int(time.time())}")
+OUTPUTS_DIR = os.path.join(PROJECT_ROOT, "outputs")
+os.makedirs(OUTPUTS_DIR, exist_ok=True)
+OUT = os.path.join(OUTPUTS_DIR, f"autoeda_output_{int(time.time())}")
 
 # ============================================================================
 # SERVICE MANAGEMENT

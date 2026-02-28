@@ -1,0 +1,6 @@
+Best Model (ensemble)
+R2 Score: 0.9829
+MSE: 271166.0848
+RMSE: 520.7361
+MAE: 259.0325
+CV Mean: 0.9928
