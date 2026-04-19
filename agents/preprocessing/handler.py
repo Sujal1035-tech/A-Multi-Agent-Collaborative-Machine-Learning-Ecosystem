@@ -4,8 +4,7 @@ import json
 import pandas as pd
 import numpy as np
 
-from config import GEMINI_MODEL
-from core.llm_utils import parse_json_from_llm
+from core.llm_utils import parse_json_from_llm, get_llm
 from core.data_utils import load_csv_robust, normalize_missing_markers
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import IterativeImputer, KNNImputer
@@ -201,7 +200,7 @@ def transform_outlier_handling(X, state, log_callback=None):
 # MAIN HANDLER — LLM Strategy Generation (no data application)
 # =============================================================================
 
-def handle(task: A2ATask, log_callback=None):
+def handle(task: A2ATask, log_callback=None, api_key=None):
     def log(msg):
         if log_callback:
             log_callback(msg)
@@ -211,6 +210,8 @@ def handle(task: A2ATask, log_callback=None):
         analysis = task.input.get("analysis_summary", task.input)
         csv_path = task.input.get("csv_path")
         target_col = analysis.get("target_column", "")
+        
+        llm = get_llm(api_key)
 
         strategist = Agent(
             role="Smart Data Preprocessing Expert",
@@ -218,7 +219,7 @@ def handle(task: A2ATask, log_callback=None):
             backstory="""You analyze data statistics and return preprocessing recommendations as pure JSON.
             You consider null percentages, outlier counts, and skewness to make smart decisions.
             Always return ONLY a valid JSON object, no extra text.""",
-            llm=GEMINI_MODEL
+            llm=llm
         )
 
         # Truncate input
@@ -274,7 +275,6 @@ Rules:
         # Flatten nested 'preprocessing_strategy' common LLM hallucination
         if "preprocessing_strategy" in strategy and "null_strategy" in strategy["preprocessing_strategy"]:
             strategy = strategy["preprocessing_strategy"]
-            
         # Ensure default keys to prevent KeyError down pipeline
         strategy.setdefault("null_strategy", {})
         strategy.setdefault("outlier_strategy", {"method": "iqr_capping", "columns": [], "threshold": 1.5, "reason": "default"})

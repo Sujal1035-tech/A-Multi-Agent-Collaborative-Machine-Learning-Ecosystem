@@ -134,10 +134,12 @@ def analyze(df: pd.DataFrame, target_column: str = None):
     cardinality = {col: df[col].nunique() for col in categorical_cols}
     
     # Use provided target column or fall back to last column
-    if target_column and target_column in df.columns:
-        target_col = target_column
-    else:
-        target_col = df.columns[-1]
+    target_col = df.columns[-1]
+    if target_column:
+        for col in df.columns:
+            if col.lower() == target_column.lower():
+                target_col = col
+                break
     
     # Enhanced null analysis
     null_info = {}

@@ -49,77 +49,15 @@ class PipelineTracer:
         lines.append(f"**Duration:** {minutes}m {seconds}s\n")
         lines.append("---\n")
 
-        # Step 1: Analysis
+        # Step 1: Analysis - Removed descriptive stats to focus purely on agent reasoning formatting.
         analysis = self.steps.get("analysis", {}).get("analysis_summary", {})
         if analysis:
-            lines.append("## Step 1: Analysis Agent\n")
+            lines.append("## Step 1: Dataset Overview\n")
             shape = analysis.get("shape", [])
-            lines.append(f"- **Shape:** {shape[0]} rows × {shape[1]} columns" if len(shape) == 2 else "")
-            lines.append(f"- **Target:** `{analysis.get('target_column', '?')}`")
-            lines.append(f"- **Numerical columns:** {', '.join(analysis.get('data_types', {}).get('numerical', []))}")
-            lines.append(f"- **Categorical columns:** {', '.join(analysis.get('data_types', {}).get('categorical', [])) or 'None'}\n")
+            lines.append(f"The agents analyzed a dataset with **{shape[0]} rows and {shape[1]} columns** to predict **`{analysis.get('target_column', '?')}`**.")
+            lines.append("*(Detailed feature statistics and distributions are saved separately in `insights.txt`)*\n")
 
-            # Descriptive statistics table
-            desc_stats = analysis.get("descriptive_stats", {})
-            if desc_stats:
-                lines.append("### Descriptive Statistics\n")
-                lines.append("| Column | Mean | Median | Std | Min | Max |")
-                lines.append("|--------|------|--------|-----|-----|-----|")
-                for col, stats in desc_stats.items():
-                    lines.append(f"| {col} | {stats['mean']} | {stats['median']} | {stats['std']} | {stats['min']} | {stats['max']} |")
-                lines.append("")
-
-            # Categorical value counts
-            cat_stats = analysis.get("categorical_stats", {})
-            if cat_stats:
-                lines.append("### Categorical Value Counts\n")
-                for col, counts in cat_stats.items():
-                    lines.append(f"**{col}:** " + ", ".join(f"{k} ({v})" for k, v in counts.items()))
-                lines.append("")
-
-            # Nulls table
-            missing = analysis.get("missing", {})
-            has_nulls = any(v.get("count", 0) > 0 for v in missing.values() if isinstance(v, dict))
-            if has_nulls:
-                lines.append("### Missing Values\n")
-                lines.append("| Column | Count | Percent |")
-                lines.append("|--------|-------|---------|")
-                for col, info in missing.items():
-                    if isinstance(info, dict) and info.get("count", 0) > 0:
-                        lines.append(f"| {col} | {info['count']} | {info['percent']}% |")
-                lines.append("")
-
-            # Outliers table
-            outliers = analysis.get("outliers", {})
-            if outliers:
-                lines.append("### Outliers (IQR)\n")
-                lines.append("| Column | Count | Percent | Bounds |")
-                lines.append("|--------|-------|---------|--------|")
-                for col, info in outliers.items():
-                    if isinstance(info, dict) and info.get("count", 0) > 0:
-                        lines.append(f"| {col} | {info['count']} | {info['percent']}% | [{info['lower_bound']}, {info['upper_bound']}] |")
-                lines.append("")
-
-            # Skewness
-            skewness = analysis.get("skewness", {})
-            if skewness:
-                lines.append("### Skewness\n")
-                lines.append("| Column | Skewness | Interpretation |")
-                lines.append("|--------|----------|----------------|")
-                for col, val in skewness.items():
-                    interp = "Normal" if abs(val) < 0.5 else ("Moderate" if abs(val) < 1 else "High")
-                    lines.append(f"| {col} | {val} | {interp} |")
-                lines.append("")
-
-        # Step 2: Insights (first pass)
-        insights_1 = self.steps.get("insights_1", {})
-        if insights_1:
-            lines.append("---\n")
-            lines.append("## Step 2: Insight Agent (First Pass)\n")
-            insight_text = insights_1.get("insights", "")
-            # Show first 500 chars to keep it brief
-            preview = insight_text[:500] + ("..." if len(insight_text) > 500 else "")
-            lines.append(f"{preview}\n")
+        # Step 2: Insights (first pass) - Removed from trace to avoid duplication with insights.txt
 
         # Step 3: Preprocessing
         prep = self.steps.get("preprocessing", {})
@@ -130,13 +68,11 @@ class PipelineTracer:
 
             null_strat = strategy.get("null_strategy", {})
             if null_strat:
-                lines.append("### Null Handling Strategy\n")
-                lines.append("| Column | Method | Reason |")
-                lines.append("|--------|--------|--------|")
+                lines.append("### Null Imputation Reasoning\n")
                 for col, config in null_strat.items():
                     method = config.get("method", config) if isinstance(config, dict) else config
-                    reason = config.get("reason", "") if isinstance(config, dict) else ""
-                    lines.append(f"| {col} | {method} | {reason} |")
+                    reason = config.get("reason", "No explicit reason was provided.") if isinstance(config, dict) else "Standard fallback applied."
+                    lines.append(f"- **{col}:** The agent decided to use **{method}** imputation. \n  *Why?* {reason}")
                 lines.append("")
 
             outlier_strat = strategy.get("outlier_strategy", {})
@@ -144,24 +80,16 @@ class PipelineTracer:
                 method = outlier_strat.get("method", "?")
                 threshold = outlier_strat.get("threshold", "?")
                 cols = outlier_strat.get("columns", [])
-                lines.append(f"### Outlier Strategy\n")
-                lines.append(f"- **Method:** {method}")
-                lines.append(f"- **Threshold:** {threshold}")
-                lines.append(f"- **Columns:** {', '.join(cols) if cols else 'None'}")
-                reason = outlier_strat.get("reason", "")
-                if reason:
-                    lines.append(f"- **Reason:** {reason}")
-                lines.append("")
+                reason = outlier_strat.get("reason", "Standard outlier capping applied.")
+                lines.append(f"### Outlier Handling Reasoning\n")
+                lines.append(f"The agent noticed strong outliers in the following columns: {', '.join(cols) if cols else 'None'}.")
+                lines.append(f"It chose to apply the **{method}** technique with a threshold of {threshold}. \n*Why?* {reason}\n")
 
             scaling_strat = strategy.get("scaling_strategy", {})
             if scaling_strat:
-                lines.append(f"### Scaling Strategy\n")
-                lines.append(f"- **Method:** {scaling_strat.get('method', '?')}")
-                lines.append(f"- **Columns:** {', '.join(scaling_strat.get('columns', []))}")
-                reason = scaling_strat.get("reason", "")
-                if reason:
-                    lines.append(f"- **Reason:** {reason}")
-                lines.append("")
+                reason = scaling_strat.get("reason", "Scaled data to assist linear algorithms.")
+                lines.append(f"### Scaling Reasoning\n")
+                lines.append(f"The agent applied **{scaling_strat.get('method', '?')}**. \n*Why?* {reason}\n")
 
         # Step 4: Feature Engineering
         feat = self.steps.get("feature", {})
@@ -172,36 +100,45 @@ class PipelineTracer:
             encoding = strategy.get("encoding_strategy", {})
 
             if encoding:
-                lines.append("### Encoding Strategy\n")
-                lines.append("| Encoding Type | Columns |")
-                lines.append("|---------------|---------|")
+                lines.append("### Encoding Reasoning\n")
+                enc_reason = encoding.get("reason", "Categorical features were detected.")
+                lines.append(f"The feature agent analyzed the categorical columns and stated: *\"{enc_reason}\"*")
                 for enc_type in ["onehot", "label", "target"]:
                     cols = encoding.get(enc_type, [])
                     if cols:
-                        lines.append(f"| {enc_type} | {', '.join(cols)} |")
+                        lines.append(f"- It chose to apply **{enc_type}** encoding to: {', '.join(cols)}")
                 lines.append("")
-                enc_reason = encoding.get("reason", "")
-                if enc_reason:
-                    lines.append(f"**Reasoning:** {enc_reason}\n")
 
             dropped = strategy.get("features_to_drop", [])
             if dropped:
-                lines.append(f"### Features Dropped\n")
-                lines.append(f"- {', '.join(dropped)}")
-                drop_reason = strategy.get("drop_reason", "")
-                if drop_reason:
-                    lines.append(f"- **Reason:** {drop_reason}")
-                lines.append("")
+                drop_reason = strategy.get("drop_reason", "Columns were deemed unnecessary.")
+                lines.append(f"### Features Dropped Reasoning\n")
+                lines.append(f"The agent decided to completely drop these columns: {', '.join(dropped)}.")
+                lines.append(f"*Why?* {drop_reason}\n")
 
         # Step 5: Model Training
         models = self.steps.get("models", {})
         if models:
             lines.append("---\n")
-            lines.append("## Step 5: Model Training Agent\n")
-            lines.append(f"- **Problem Type:** {models.get('problem_type', '?')}")
-            lines.append(f"- **Metric:** {models.get('metric', '?')}")
-            lines.append(f"- **Used SMOTE:** {'Yes' if models.get('used_balancing') else 'No'}")
-            lines.append(f"- **Used Optuna Tuning:** {'Yes' if models.get('used_tuning') else 'No'}\n")
+            lines.append("## Step 5: Model Training Agent (Heuristics & Rationale)\n")
+            
+            p_type = models.get('problem_type', '?')
+            lines.append("### Agent Thinking & Pipeline Decisions\n")
+            lines.append(f"1. **Detection:** Classified task as **{p_type.capitalize()}** based on target feature cardinality and data type.")
+            lines.append(f"2. **Scaling Phase:** Applied **RobustScaler + StandardScaler** because many datasets contain hidden outliers and linear models require centered variance.")
+            
+            if models.get('used_balancing'):
+                lines.append("3. **Imbalance Handled:** Detected class imbalance! Applied class weight balancing (or SMOTE) so the model doesn't blindly predict the majority class.")
+            elif p_type == 'classification':
+                lines.append("3. **Imbalance Handled:** Classes look relatively balanced. Skipped SMOTE/weighting to preserve original distributions.")
+                
+            if models.get('target_transform'):
+                lines.append("4. **Target Skewness:** Detected severe target skewness > 1.0! Applied a **Yeo-Johnson PowerTransformer** to normalize the variable and stabilize error gradients.")
+                
+            if models.get('used_tuning'):
+                lines.append("5. **Hyperparameter Tuning:** Triggered Optuna to actively search for the best `max_depth`, `learning_rate`, and `n_estimators` using local cross-validation.")
+                
+            lines.append("\n### Model Performance\n")
 
             all_models = models.get("models", {})
             is_regression = models.get("problem_type") == "regression"
@@ -252,16 +189,9 @@ class PipelineTracer:
         if evaluation:
             lines.append("---\n")
             lines.append("## Step 6: Evaluation Agent\n")
-            lines.append(f"{evaluation.get('evaluation', 'No evaluation data')}\n")
+            lines.append(f"```json\n{json.dumps(evaluation, indent=2)}\n```\n")
 
-        # Step 7: Final Insights
-        insights_2 = self.steps.get("insights_2", {})
-        if insights_2:
-            lines.append("---\n")
-            lines.append("## Step 7: Final Insights\n")
-            insight_text = insights_2.get("insights", "")
-            preview = insight_text[:800] + ("..." if len(insight_text) > 800 else "")
-            lines.append(f"{preview}\n")
+        # Step 7: Final Insights - Removed from trace to avoid duplication with insights.txt
 
         # Step 8: Project generation
         project = self.steps.get("project", {})

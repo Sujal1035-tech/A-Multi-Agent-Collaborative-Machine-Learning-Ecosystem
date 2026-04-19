@@ -593,7 +593,13 @@ def handle(task: A2ATask, log_callback=None):
         df = normalize_missing_markers(df)
 
         # Use provided target column or fall back to last column
-        target_col = task.input.get("target_column", df.columns[-1])
+        target_col_raw = task.input.get("target_column", df.columns[-1])
+        target_col = target_col_raw
+        if target_col_raw:
+            for col in df.columns:
+                if col.lower() == target_col_raw.lower():
+                    target_col = col
+                    break
         log(f"[MODEL] Target column: {target_col}")
 
         # --- Separate X/y ---
@@ -714,7 +720,7 @@ def handle(task: A2ATask, log_callback=None):
 
         # --- Train base models ---
         results = {}
-        best_cv_score = -np.inf
+        best_test_score = -np.inf
         best_model_name = None
         best_model_obj = None
 
@@ -821,12 +827,12 @@ def handle(task: A2ATask, log_callback=None):
                     overfit_warning = " OVERFIT" if (train_r2 - test_score) > 0.1 else ""
                     log(f"[MODEL]   {name}: R2={test_score:.4f}, RMSE={rmse:.4f}, CV={cv_mean:.4f}, train={train_r2:.4f}{overfit_warning}")
 
-                if cv_mean > best_cv_score:
-                    best_cv_score = cv_mean
+                if test_score > best_test_score:
+                    best_test_score = test_score
                     best_model_name = name
                     best_model_obj = res["model_obj"]
 
-        log(f"[MODEL] Best base model: {best_model_name} (CV={best_cv_score:.4f})")
+        log(f"[MODEL] Best base model: {best_model_name} (test={best_test_score:.4f})")
 
         # --- Always run Optuna tuning (not gated behind 80%) ---
         tuned_result = None
@@ -840,25 +846,64 @@ def handle(task: A2ATask, log_callback=None):
                 if target_transformer is not None and not is_classification:
                     y_pred_tuned = target_transformer.inverse_transform(y_pred_tuned.reshape(-1, 1)).ravel()
 
+                tuned_cv = tuned_result['cv_score']
+                log(f"[MODEL] Tuned model CV={tuned_cv:.4f}")
+
                 if is_classification:
                     tuned_test_score = accuracy_score(y_test, y_pred_tuned)
+                    avg = 'binary' if len(np.unique(y_train)) == 2 else 'weighted'
+                    t_prec = precision_score(y_test, y_pred_tuned, average=avg, zero_division=0)
+                    t_rec = recall_score(y_test, y_pred_tuned, average=avg, zero_division=0)
+                    t_f1 = f1_score(y_test, y_pred_tuned, average=avg, zero_division=0)
+                    t_auc = None
+                    try:
+                        if hasattr(tuned_result['model'], 'predict_proba'):
+                            y_proba_t = tuned_result['model'].predict_proba(X_test_use)
+                            if len(np.unique(y_train)) == 2:
+                                t_auc = roc_auc_score(y_test, y_proba_t[:, 1])
+                            else:
+                                t_auc = roc_auc_score(y_test, y_proba_t, multi_class='ovr', average='weighted')
+                    except Exception:
+                        pass
+                    
+                    results[tuned_result['name']] = {
+                        "score": float(tuned_test_score),
+                        "accuracy": float(tuned_test_score),
+                        "precision": float(t_prec),
+                        "recall": float(t_rec),
+                        "f1_score": float(t_f1),
+                        "auc_roc": float(t_auc) if t_auc is not None else None,
+                        "cv_score": float(tuned_cv),
+                        "params": tuned_result['params'],
+                        "metric": metric_name,
+                        "model_obj": tuned_result['model']
+                    }
                 else:
                     tuned_test_score = r2_score(y_test, y_pred_tuned)
+                    n = len(y_test)
+                    p = X_test_use.shape[1]
+                    adj_r2 = 1 - (1 - tuned_test_score) * (n - 1) / (n - p - 1) if n > p + 1 else tuned_test_score
+                    mse = mean_squared_error(y_test, y_pred_tuned)
+                    rmse = mse ** 0.5
+                    mae = mean_absolute_error(y_test, y_pred_tuned)
 
-                tuned_cv = tuned_result['cv_score']
+                    results[tuned_result['name']] = {
+                        "score": float(tuned_test_score),
+                        "r2": float(tuned_test_score),
+                        "adjusted_r2": float(adj_r2),
+                        "mse": float(mse),
+                        "rmse": float(rmse),
+                        "mae": float(mae),
+                        "cv_score": float(tuned_cv),
+                        "params": tuned_result['params'],
+                        "metric": metric_name,
+                        "model_obj": tuned_result['model']
+                    }
+
                 log(f"[MODEL] Tuned model: test={tuned_test_score:.4f}, CV={tuned_cv:.4f}")
-
-                results[tuned_result['name']] = {
-                    "score": float(tuned_test_score),
-                    "cv_score": float(tuned_cv),
-                    "params": tuned_result['params'],
-                    "metric": metric_name,
-                    "model_obj": tuned_result['model']
-                }
-
-                if tuned_cv > best_cv_score:
-                    log(f"[MODEL] ✓ Tuning improved CV: {best_cv_score:.4f} → {tuned_cv:.4f}")
-                    best_cv_score = tuned_cv
+                if tuned_test_score > best_test_score:
+                    log(f"[MODEL] ✓ Tuning improved test: {best_test_score:.4f} → {tuned_test_score:.4f}")
+                    best_test_score = tuned_test_score
                     best_model_name = tuned_result['name']
                     best_model_obj = tuned_result['model']
 
@@ -929,11 +974,11 @@ def handle(task: A2ATask, log_callback=None):
                     "metric": metric_name
                 }
 
-            # Use the same selection criterion as base models: CV score.
-            if ensemble_cv > best_cv_score:
-                log(f"[MODEL] ✓ Ensemble beats best! Using ensemble.")
+            # Use test score (accuracy/R2) for final selection
+            if ensemble_score > best_test_score:
+                log(f"[MODEL] ✓ Ensemble beats best! test={ensemble_score:.4f} > {best_test_score:.4f}")
                 best_model_name = 'ensemble'
-                best_cv_score = ensemble_cv
+                best_test_score = ensemble_score
 
         # Get the final best test score for reporting
         best_score = results.get(best_model_name, {}).get("score", 0)

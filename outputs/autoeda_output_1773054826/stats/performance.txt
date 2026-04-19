@@ -1,0 +1,8 @@
+Best Model: ensemble
+Type: regression
+R² Score: 0.9212
+Adjusted R²: 0.9194
+MSE: 20.5277
+RMSE: 4.5307
+MAE: 3.6694
+CV Mean: 0.9301

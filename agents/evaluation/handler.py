@@ -2,11 +2,10 @@ from crewai import Agent, Task, Crew
 from a2a.schemas import A2ATask, A2AResponse
 import json
 
-from config import GEMINI_MODEL
-from core.llm_utils import parse_json_from_llm
+from core.llm_utils import parse_json_from_llm, get_llm
 
 
-def handle(task: A2ATask, log_callback=None):
+def handle(task: A2ATask, log_callback=None, api_key=None):
     try:
         if log_callback:
             log_callback("[EVALUATION] Starting model evaluation...")
@@ -34,8 +33,17 @@ def handle(task: A2ATask, log_callback=None):
                 "- Are there signs of heteroscedasticity based on the error metrics?"
             )
 
-        # Truncate model results to manage token limits
-        results_str = str(model_results)[:3000]
+        # Convert to proper JSON string instead of blindly truncating
+        import json
+        clean_results = dict(model_results) if isinstance(model_results, dict) else {"results": str(model_results)}
+        clean_results.pop('ensemble_members', None)
+        clean_results.pop('feature_importance', None)
+        try:
+            results_str = json.dumps(clean_results, indent=2)
+        except Exception:
+            results_str = str(clean_results)
+
+        llm = get_llm(api_key)
 
         strategist = Agent(
             role="Model Evaluation Strategist",
@@ -45,7 +53,7 @@ def handle(task: A2ATask, log_callback=None):
                 "data-driven insights. You analyze metrics carefully and distinguish "
                 "between overfitting and genuine performance."
             ),
-            llm=GEMINI_MODEL
+            llm=llm
         )
 
         t = Task(

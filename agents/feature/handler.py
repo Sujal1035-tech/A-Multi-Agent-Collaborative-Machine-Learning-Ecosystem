@@ -4,8 +4,7 @@ import json
 import pandas as pd
 import numpy as np
 
-from config import GEMINI_MODEL
-from core.llm_utils import parse_json_from_llm
+from core.llm_utils import parse_json_from_llm, get_llm
 from core.data_utils import load_csv_robust
 
 
@@ -266,7 +265,7 @@ def transform_encoding(X, state, log_callback=None):
 # MAIN HANDLER — LLM Strategy Generation (no data application)
 # =============================================================================
 
-def handle(task: A2ATask, log_callback=None):
+def handle(task: A2ATask, log_callback=None, api_key=None):
     def log(msg):
         if log_callback:
             log_callback(msg)
@@ -287,6 +286,8 @@ def handle(task: A2ATask, log_callback=None):
             except Exception:
                 pass
 
+        llm = get_llm(api_key)
+
         engineer = Agent(
             role="Smart Feature Engineering Expert",
             goal="Analyze data and return ONLY valid JSON with encoding strategies",
@@ -297,7 +298,7 @@ def handle(task: A2ATask, log_callback=None):
             - Categorical Label for binary or ordinal data
             - Categorical Target/frequency encoding for high cardinality (>10 unique)
             Always return ONLY a valid JSON object.""",
-            llm=GEMINI_MODEL
+            llm=llm
         )
 
         # Truncate input

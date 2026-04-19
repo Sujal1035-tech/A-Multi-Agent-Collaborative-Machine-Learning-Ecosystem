@@ -5,7 +5,23 @@ Common functions used by multiple agents — extracted to avoid duplication.
 
 import json
 import re
+import os
+from langchain_google_genai import ChatGoogleGenerativeAI
+from config import GEMINI_MODEL
 
+def get_llm(api_key: str = None):
+    """
+    Get a thread-safe LLM instance for CrewAI agents.
+    Uses explicitly passed API key rather than relying on global os.environ.
+    """
+    key = api_key or os.environ.get("GEMINI_API_KEY", "")
+    # ChatGoogleGenerativeAI expects the model name without the "gemini/" prefix used by litellm
+    model_name = GEMINI_MODEL.replace("gemini/", "") if GEMINI_MODEL.startswith("gemini/") else GEMINI_MODEL
+    
+    return ChatGoogleGenerativeAI(
+        model=model_name,
+        google_api_key=key
+    )
 
 def parse_json_from_llm(text: str) -> dict:
     """Extract JSON from LLM response text.

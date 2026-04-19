@@ -49,6 +49,9 @@ def handle_project(task: A2ATask, log_callback=None) -> A2AResponse:
 
         null_strategy = prep_strategy.get('null_strategy', {})
         encoding_strategy = feat_strategy.get('encoding_strategy', {})
+        onehot_cols = encoding_strategy.get("onehot", [])
+        label_cols = encoding_strategy.get("label", [])
+        target_enc_cols = encoding_strategy.get("target", [])
         features_to_drop = feat_strategy.get('features_to_drop', [])
         outlier_strategy = prep_strategy.get('outlier_strategy', {})
         outlier_method = outlier_strategy.get("method", "iqr_capping")
@@ -414,6 +417,19 @@ python analysis.py
 """
 
         log(f"[PROJECT] ✓ Generated code for {best_name} (mirrors pipeline exactly)")
+
+        # Save explicitly if running via API
+        import os
+        output_folder = task.input.get("output_folder", None)
+        if output_folder and os.path.exists(output_folder):
+            try:
+                with open(os.path.join(output_folder, "analysis.py"), "w", encoding="utf-8") as f:
+                    f.write(code)
+                with open(os.path.join(output_folder, "README.md"), "w", encoding="utf-8") as f:
+                    f.write(readme_content)
+                log(f"[PROJECT] ✓ Saved files directly to {output_folder}")
+            except Exception as e:
+                log(f"[PROJECT] ⚠ Could not save files: {e}")
 
         return A2AResponse(
             task_id=task.task_id,

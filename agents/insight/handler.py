@@ -1,13 +1,14 @@
 from crewai import Agent, Task, Crew
 from a2a.schemas import A2ATask, A2AResponse
 
-from config import GEMINI_MODEL
+from core.llm_utils import get_llm
 
-
-def handle(task: A2ATask, log_callback=None):
+def handle(task: A2ATask, log_callback=None, api_key=None):
     try:
         if log_callback:
             log_callback(f"[INSIGHT] Generating insights (Senior Analyst AI)...")
+
+        llm = get_llm(api_key)
 
         analyst = Agent(
             role="Senior Data Analyst",
@@ -15,7 +16,7 @@ def handle(task: A2ATask, log_callback=None):
             backstory="""You are a senior data analyst with expertise in statistical analysis and machine learning. 
             You excel at presenting complex findings in clear, structured reports that are easy to understand.
             Always organize your insights into logical sections with proper formatting.""",
-            llm=GEMINI_MODEL
+            llm=llm
         )
         
         # Truncate input to avoid token limits

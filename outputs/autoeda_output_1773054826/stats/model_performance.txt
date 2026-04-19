@@ -1,0 +1,6 @@
+Best Model (Unknown)
+R2 Score: 0.8981
+MSE: 26.5463
+RMSE: 5.1523
+MAE: 4.1151
+CV Mean: 0.9099

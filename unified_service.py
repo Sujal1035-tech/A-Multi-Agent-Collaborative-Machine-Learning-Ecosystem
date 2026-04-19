@@ -4,7 +4,7 @@ This file imports handlers from agents/ folder to avoid code duplication.
 Run: uvicorn unified_service:app --port 8081
 """
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from a2a.schemas import A2ATask, A2AResponse
@@ -12,7 +12,24 @@ from dotenv import load_dotenv
 import logging
 import threading
 import traceback
+import os
 from contextlib import contextmanager
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse as StarletteJSONResponse
+
+# Define payload size limit (40 MB)
+MAX_PAYLOAD_SIZE = int(os.environ.get("MAX_PAYLOAD_SIZE", 40 * 1024 * 1024))
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.headers.get('content-length'):
+            content_length = int(request.headers.get('content-length'))
+            if content_length > MAX_PAYLOAD_SIZE:
+                return StarletteJSONResponse(
+                    content={"error": f"Payload too large. Maximum allowed is {MAX_PAYLOAD_SIZE / 1024 / 1024} MB"},
+                    status_code=413
+                )
+        return await call_next(request)
 
 # Import all agent handlers
 from agents.analysis.handler import handle_analysis
@@ -66,12 +83,17 @@ from config import SERVICE_PORT, SERVICE_HOST
 
 app = FastAPI(title="AutoML Unified Service", version="3.1")
 
+# Add request size limit middleware (protect against OOM from huge payloads)
+app.add_middleware(RequestSizeLimitMiddleware)
+
 # CORS middleware for web UI support
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict in production
+    allow_origins=["*"],  # Allow any origin to connect for local web UI testing
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["*"], 
     allow_headers=["*"],
 )
 
@@ -147,41 +169,17 @@ def _select_key_id(agent_name: str, task: A2ATask) -> str | None:
     return None
 
 
-@contextmanager
-def _key_context(key_id: str | None):
-    """Serialize LLM calls while setting key in-process for thread safety."""
-    if not key_id or not GEMINI_KEYS.get(key_id):
-        yield
-        return
-
-    with KEY_LOCK:
-        previous_gemini_key = os.environ.get("GEMINI_API_KEY", "")
-        previous_google_key = os.environ.get("GOOGLE_API_KEY", "")
-        try:
-            os.environ["GEMINI_API_KEY"] = GEMINI_KEYS[key_id]
-            os.environ["GOOGLE_API_KEY"] = GEMINI_KEYS[key_id]
-            try:
-                import litellm
-                litellm.api_key = GEMINI_KEYS[key_id]
-            except Exception:
-                pass
-            yield
-        finally:
-            os.environ["GEMINI_API_KEY"] = previous_gemini_key
-            os.environ["GOOGLE_API_KEY"] = previous_google_key
-            try:
-                import litellm
-                litellm.api_key = previous_google_key or previous_gemini_key
-            except Exception:
-                pass
-
-
 def _run_with_agent_key(agent_name: str, task: A2ATask, handler, log_callback):
     """Run agent handler with proper API key and input validation."""
     validate_task_input(task, agent_name)
     key_id = _select_key_id(agent_name, task)
-    with _key_context(key_id):
-        return handler(task, log_callback)
+    api_key = GEMINI_KEYS.get(key_id)
+
+    import inspect
+    sig = inspect.signature(handler)
+    if 'api_key' in sig.parameters:
+        return handler(task, log_callback, api_key=api_key)
+    return handler(task, log_callback)
 
 
 # ============================================================================
@@ -199,6 +197,90 @@ def swap_key(key_id: str):
         "mode": "request-scoped",
         "message": "Global key swapping is disabled; key is selected per request."
     }
+# ============================================================================
+# FILE UPLOAD ENDPOINT
+# ============================================================================
+
+import shutil
+import time
+from pathlib import Path
+
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
+OUTPUTS_DIR = Path("outputs")
+OUTPUTS_DIR.mkdir(exist_ok=True)
+
+
+
+@app.post("/upload")
+async def upload_dataset(file: UploadFile = File(...)):
+    """Accepts a CSV upload, creates an output folder, and saves the file."""
+    if not file.filename.endswith(('.csv', '.tsv', '.txt')):
+        return JSONResponse(status_code=400, content={"error": "Only CSV, TSV, or TXT files are allowed."})
+    
+    # Create a unique output folder for this run
+    run_id = f"autoeda_output_{int(time.time())}"
+    output_folder = OUTPUTS_DIR / run_id
+    output_folder.mkdir(exist_ok=True)
+    (output_folder / "plots").mkdir(exist_ok=True)
+    (output_folder / "models").mkdir(exist_ok=True)
+    (output_folder / "reports").mkdir(exist_ok=True)
+    (output_folder / "stats").mkdir(exist_ok=True)
+    
+    # Save uploaded file
+    file_path = UPLOAD_DIR / file.filename
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    # Also copy to output folder
+    shutil.copy2(str(file_path), str(output_folder / "data.csv"))
+        
+    return {
+        "message": "File uploaded successfully", 
+        "csv_path": str(file_path.absolute()),
+        "output_folder": str(output_folder.absolute()),
+        "run_id": run_id
+    }
+
+
+@app.get("/list-outputs")
+async def list_outputs():
+    """List all output folders available for download."""
+    outputs_dir = Path("outputs")
+    if not outputs_dir.exists():
+        return {"folders": []}
+    folders = sorted([f.name for f in outputs_dir.iterdir() if f.is_dir()], reverse=True)
+    return {"folders": folders}
+
+
+@app.get("/download-output/{folder_name}")
+async def download_output(folder_name: str):
+    """Zip and download an entire output folder."""
+    import zipfile
+    import io
+    
+    outputs_dir = Path("outputs") / folder_name
+    if not outputs_dir.exists():
+        return JSONResponse(status_code=404, content={"error": f"Output folder '{folder_name}' not found."})
+    
+    # Create zip in memory
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for file_path in outputs_dir.rglob('*'):
+            if file_path.is_file():
+                arcname = file_path.relative_to(outputs_dir)
+                zf.write(file_path, arcname)
+    
+    zip_buffer.seek(0)
+    
+    from starlette.responses import Response
+    return Response(
+        content=zip_buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={folder_name}.zip"}
+    )
+
+
 # ============================================================================
 # AGENT ENDPOINTS - All import from agents/ folder (NO DUPLICATION!)
 # ============================================================================
@@ -318,9 +400,11 @@ def health():
         "keys_loaded": sum(1 for v in GEMINI_KEYS.values() if v)
     }
 
+# Static file serving — MUST be after all route definitions
+from starlette.staticfiles import StaticFiles
+app.mount("/static/outputs", StaticFiles(directory="outputs"), name="outputs")
+
 if __name__ == "__main__":
     import uvicorn
     logger.info(f"Starting server on {SERVICE_HOST}:{SERVICE_PORT}...")
     uvicorn.run(app, host=SERVICE_HOST, port=SERVICE_PORT)
-
-
