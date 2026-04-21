@@ -1,6 +1,12 @@
-__pycache__
+__pycache__/
+*.py[cod]
+*$py.class
 .env
-*.pyc
-# Large model files
+.venv/
+env/
+venv/
+ENV/
 *.pkl
 outputs/*/models/
+node_modules/
+.DS_Store

@@ -7,7 +7,7 @@ Ever spent hours meticulously cleaning data, experimenting with different encodi
 Give it a dataset and a target column. Seven specialized AI agents will work collaboratively to understand your data, clean it intelligently, train multiple models, find the best fit, and give you production-ready Python code.
 
 The best part? **The AI actually thinks about your data contextually.**
-High skewness? It defaults to median imputation. Dozens of unique values? It uses frequency encoding over one-hot encoding. All decisions are context-aware, not just a hardcoded list of rules.
+High skewness? It defaults to median imputation. Dozens of unique values? It uses frequency encoding over one-hot encoding. All decisions are context-aware, not just a hardcoded list of rules. Train by itself and pick best model.
 
 ---
 
